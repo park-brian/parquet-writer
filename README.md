@@ -7,5 +7,6 @@ Start with the [design and reference index](docs/README.md), the
 
 The target is portable ESM JavaScript for large analytical tables, with row and
 column input, typed arrays, bounded data buffering, nested data, and asynchronous
-output. The initial write path supports explicit, required INT32, DOUBLE, and
-UTF-8 string fields with uncompressed PLAIN pages.
+output. The current writer accepts row iterables and column batches with an
+explicit flat schema, writes nullable primitive values in uncompressed PLAIN
+pages, and streams through buffer, web stream, and Node adapters.

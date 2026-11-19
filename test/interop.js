@@ -15,9 +15,16 @@ function run(command, args, options = {}) {
 
 mkdirSync('.tmp', { recursive: true })
 const directory = mkdtempSync('.tmp/interop-').replaceAll('\\', '/')
-for (const [name, data] of [['populated', rows], ['empty', []]]) {
+const optionalSchema = { fields: schema.fields.map(field => ({ ...field, nullable: true })) }
+const nullable = rows.map((row, i) => i % 3 ? row : { ...row, value: null, label: null })
+await check('populated', schema, rows)
+await check('empty', schema, [])
+await check('nullable', optionalSchema, nullable, { rowGroupRows: 13, pageByteTarget: 18 })
+
+async function check(name, schema, data, options = {}) {
   const filename = join(directory, name + '.parquet').replaceAll('\\', '/')
-  const bytes = await writeParquetBuffer({ schema, rows: data })
+  const bytes = await writeParquetBuffer({ schema, rows: data, ...options })
+  const groupCount = Math.ceil(data.length / (options.rowGroupRows || 65_536))
   writeFileSync(filename, bytes)
 
   const result = run(process.env.DUCKDB || 'duckdb', [
@@ -26,15 +33,15 @@ for (const [name, data] of [['populated', rows], ['empty', []]]) {
   assert.deepEqual(JSON.parse(result.trim() || '[]'), data)
 
   run(process.env.PYTHON || 'python', ['test/inspect_parquet.py', filename], {
-    input: JSON.stringify(data),
+    input: JSON.stringify({ data, groupCount }),
   })
 
   const jar = process.env.PARQUET_CLI_JAR ||
     '_references/cbiit-parquet-cli/bin/parquet-cli-1.15.2.jar'
   const java = command => run('java', ['-jar', jar, command, filename])
   const footer = JSON.parse(java('footer'))
-  assert.equal(footer.blocks.length, data.length ? 1 : 0)
-  assert.deepEqual(footer.fileMetaData.schema.fields.map(field => field.name), ['id', 'value', 'label'])
+  assert.equal(footer.blocks.length, groupCount)
+  assert.deepEqual(footer.fileMetaData.schema.fields.map(field => field.name), schema.fields.map(field => field.name))
   if (data.length) {
     const pages = java('pages')
     for (const field of schema.fields) assert.ok(pages.includes('Column: ' + field.name))

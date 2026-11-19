@@ -3,8 +3,18 @@
   "version": "0.0.1",
   "type": "module",
   "exports": {
-    "types": "./types/index.d.ts",
-    "default": "./src/index.js"
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./web": {
+      "types": "./types/web.d.ts",
+      "default": "./src/web.js"
+    },
+    "./node": {
+      "types": "./types/node.d.ts",
+      "default": "./src/node.js"
+    }
   },
   "files": [
     "src",
@@ -15,13 +25,14 @@
   },
   "scripts": {
     "test": "node --test test/*.test.js",
-    "typecheck": "tsc --allowJs --checkJs --strict --noEmit --target es2022 --module nodenext src/index.js",
-    "build:types": "tsc --allowJs --checkJs --strict --declaration --emitDeclarationOnly --target es2022 --module nodenext --outDir types src/index.js",
+    "typecheck": "tsc --types node --allowJs --checkJs --strict --noEmit --target es2022 --module nodenext src/index.js src/node.js src/web.js",
+    "build:types": "tsc --types node --allowJs --checkJs --strict --declaration --emitDeclarationOnly --target es2022 --module nodenext --outDir types src/index.js src/node.js src/web.js",
     "prepack": "npm run build:types",
     "test:interop": "node test/interop.js",
     "test:browser": "node test/browser.js"
   },
   "devDependencies": {
+    "@types/node": "22.20.5",
     "hyparquet": "1.33.1",
     "playwright": "1.65.1",
     "typescript": "7.0.2"

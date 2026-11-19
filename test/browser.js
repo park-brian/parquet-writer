@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { chromium, firefox, webkit } from 'playwright'
 import { parquetReadObjects } from 'hyparquet'
 import { rows, schema } from './fixture.js'
 
 const modules = new Map()
-for (const filename of ['index.js', 'binary.js', 'metadata.js']) {
+for (const filename of await readdir(new URL('../src/', import.meta.url))) {
   modules.set('/' + filename, await readFile(new URL('../src/' + filename, import.meta.url)))
 }
 const server = createServer((request, response) => {

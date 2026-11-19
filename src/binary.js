@@ -34,6 +34,17 @@ export class Bytes {
     const offset = this.#reserve(8)
     this.#view.setFloat64(offset, value, true)
   }
+  /** @param {number} value */
+  f32(value) {
+    const offset = this.#reserve(4)
+    this.#view.setFloat32(offset, value, true)
+  }
+
+  /** @param {bigint} value */
+  i64(value) {
+    const offset = this.#reserve(8)
+    this.#view.setBigInt64(offset, value, true)
+  }
   /** @param {Uint8Array} value */
   append(value) {
     const offset = this.#reserve(value.length)

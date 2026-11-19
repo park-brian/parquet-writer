@@ -70,28 +70,34 @@ export function pageHeader(size, count) {
   ])
 }
 
-/** @typedef {{ name: string, physical: number, utf8: boolean }} Leaf */
+/** @typedef {import('./pages.js').Leaf} Leaf */
 /** @typedef {{ leaf: Leaf, offset: bigint, size: bigint }} Chunk */
+/** @typedef {{ chunks: Chunk[], count: number }} Group */
 
-/** @param {Leaf[]} leaves @param {Chunk[]} chunks @param {number} count */
-export function footer(leaves, chunks, count) {
+/** @param {Leaf[]} leaves @param {Group[]} rowGroups @param {bigint} count */
+export function footer(leaves, rowGroups, count) {
   /** @type {Field[][]} */
   const schema = [[[4, BINARY, 'schema'], [5, I32, leaves.length]]]
   for (const leaf of leaves) {
     /** @type {Field[]} */
-    const field = [[1, I32, leaf.physical], [3, I32, 0], [4, BINARY, leaf.name]]
+    const field = [[1, I32, leaf.physical]]
+    if (leaf.physical === 7) field.push([2, I32, leaf.length])
+    field.push([3, I32, leaf.nullable ? 1 : 0], [4, BINARY, leaf.name])
     if (leaf.utf8) field.push([6, I32, 0], [10, STRUCT, [[1, STRUCT, []]]])
     schema.push(field)
   }
-  const columns = chunks.map(({ leaf, offset, size }) => [
-    [2, I64, 0n],
-    [3, STRUCT, [
-      [1, I32, leaf.physical], [2, LIST, [I32, [0]]], [3, LIST, [BINARY, [leaf.name]]],
-      [4, I32, 0], [5, I64, count], [6, I64, size], [7, I64, size], [9, I64, offset],
-    ]],
-  ])
-  const size = chunks.reduce((sum, chunk) => sum + chunk.size, 0n)
-  const groups = count ? [[[1, LIST, [STRUCT, columns]], [2, I64, size], [3, I64, count]]] : []
+  const groups = rowGroups.map(({ chunks, count }) => {
+    const columns = chunks.map(({ leaf, offset, size }) => [
+      [2, I64, 0n],
+      [3, STRUCT, [
+        [1, I32, leaf.physical], [2, LIST, [I32, leaf.nullable ? [0, 3] : [0]]],
+        [3, LIST, [BINARY, [leaf.name]]], [4, I32, 0], [5, I64, count],
+        [6, I64, size], [7, I64, size], [9, I64, offset],
+      ]],
+    ])
+    const size = chunks.reduce((sum, chunk) => sum + chunk.size, 0n)
+    return [[1, LIST, [STRUCT, columns]], [2, I64, size], [3, I64, count]]
+  })
   return encodeCompact([
     [1, I32, 1], [2, LIST, [STRUCT, schema]], [3, I64, count],
     [4, LIST, [STRUCT, groups]], [6, BINARY, 'parquet-writer version 0.0.1'],
