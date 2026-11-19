@@ -1,8 +1,11 @@
 import { Bytes } from './binary.js'
-import { footer, pageHeader } from './metadata.js'
-import { compile, dataPage, normalize, valueSize } from './pages.js'
+import { dictionaryHeader, footer, pageHeader } from './metadata.js'
+import { compile, dataPage, hybrid, normalize, plain, valueSize } from './pages.js'
+import { dictionary, encodeBounds, mergeBounds, pageBounds } from './column.js'
+import { snappy } from './snappy.js'
 
 const magic = Uint8Array.of(80, 65, 82, 49)
+const codecIds = { UNCOMPRESSED: 0, SNAPPY: 1, GZIP: 2, LZO: 3, BROTLI: 4, LZ4: 5, ZSTD: 6, LZ4_RAW: 7 }
 
 /** @typedef {import('./pages.js').Schema} Schema */
 /** @typedef {import('./pages.js').Value} Value */
@@ -10,7 +13,9 @@ const magic = Uint8Array.of(80, 65, 82, 49)
 /** @typedef {ArrayLike<unknown>} Vector */
 /** @typedef {{ rowCount: number, columns: Record<string, Vector | { values: Vector, validity?: Uint8Array }> }} Batch */
 /** @template T @typedef {Iterable<T> | AsyncIterable<T>} Source */
-/** @typedef {{ schema: Schema, rowGroupRows?: number, rowGroupByteTarget?: number, pageByteTarget?: number, signal?: AbortSignal }} Options */
+/** @typedef {keyof typeof codecIds} Codec */
+/** @typedef {(bytes: Uint8Array) => Uint8Array | Promise<Uint8Array>} Compressor */
+/** @typedef {{ schema: Schema, rowGroupRows?: number, rowGroupByteTarget?: number, pageByteTarget?: number, signal?: AbortSignal, codec?: Codec, codecs?: Partial<Record<Codec, Compressor>>, dictionary?: 'auto' | false, dictionaryByteLimit?: number, statistics?: boolean, statisticsMaxBytes?: number }} Options */
 /** @typedef {Options & ({ rows: Source<Row>, columns?: never } | { columns: Batch | Source<Batch>, rows?: never })} Input */
 /** @typedef {{ write(bytes: Uint8Array): void | Promise<void>, close?(): void | Promise<void>, abort?(reason: unknown): void | Promise<void> }} Sink */
 
@@ -21,6 +26,10 @@ export class ParquetWriter {
   #rowLimit
   #groupTarget
   #pageTarget
+  #compress
+  #codec
+  #dictionaryLimit
+  #statisticsLimit
   /** @type {Value[][]} */
   #columns
   #rows = 0
@@ -40,13 +49,21 @@ export class ParquetWriter {
   #finished = false
 
   /** @param {Options & { sink: Sink }} options */
-  constructor({ schema, sink, signal, rowGroupRows = 65_536, rowGroupByteTarget = 64 * 1024 * 1024, pageByteTarget = 1024 * 1024 }) {
-    for (const size of [rowGroupRows, rowGroupByteTarget, pageByteTarget]) {
+  constructor({ schema, sink, signal, rowGroupRows = 65_536, rowGroupByteTarget = 64 * 1024 * 1024, pageByteTarget = 1024 * 1024,
+    codec = 'SNAPPY', codecs, dictionary = 'auto', dictionaryByteLimit = 1024 * 1024, statistics = true, statisticsMaxBytes = 4096 }) {
+    for (const size of [rowGroupRows, rowGroupByteTarget, pageByteTarget, dictionaryByteLimit, statisticsMaxBytes]) {
       if (!Number.isSafeInteger(size) || size < 1 || size > 0x7fffffff) {
         throw new RangeError('Expected positive size targets within the Parquet i32 limit')
       }
     }
     if (typeof sink?.write !== 'function') throw new TypeError('Expected a writable sink')
+    if (!Object.hasOwn(codecIds, codec)) throw new TypeError('Unknown codec: ' + codec)
+    const compressor = codecs && Object.hasOwn(codecs, codec) ? codecs[codec] : undefined
+    this.#compress = codec === 'UNCOMPRESSED' ? undefined : compressor ?? (codec === 'SNAPPY' ? snappy : undefined)
+    if (codec !== 'UNCOMPRESSED' && typeof this.#compress !== 'function') throw new TypeError('No compressor for ' + codec)
+    this.#codec = codecIds[codec]
+    this.#dictionaryLimit = dictionary === false ? 0 : dictionaryByteLimit
+    this.#statisticsLimit = statistics ? statisticsMaxBytes : 0
     this.#leaves = compile(schema)
     this.#columns = this.#leaves.map(() => [])
     this.#sink = sink
@@ -165,27 +182,82 @@ export class ParquetWriter {
     if (!this.#offset) await this.#write(magic.slice())
     const chunks = []
     for (const [index, leaf] of this.#leaves.entries()) {
-      const values = this.#columns[index]
-      const offset = this.#offset
-      let start = 0
-      while (start < values.length) {
-        let end = start
-        let estimate = 0
-        do { estimate += valueSize(leaf, values[end++]) }
-        while (end < values.length && estimate < this.#pageTarget)
-        const page = values.slice(start, end)
-        const definitions = leaf.nullable ? page.map(value => value === null ? 0 : 1) : []
-        const payload = dataPage(leaf, page, definitions, leaf.nullable ? 1 : 0)
-        await this.#write(pageHeader(payload.length, page.length))
-        await this.#write(payload)
-        start = end
-      }
-      chunks.push({ leaf, offset, size: this.#offset - offset })
+      chunks.push(await this.#writeColumn(leaf, this.#columns[index]))
     }
     this.#groups.push({ chunks, count: this.#rows })
     this.#rowCount += BigInt(this.#rows)
     for (const column of this.#columns) column.length = 0
     this.#rows = this.#estimatedBytes = 0
+  }
+
+  /** @param {import('./pages.js').Leaf} leaf @param {Value[]} values */
+  async #writeColumn(leaf, values) {
+    const ranges = []
+    for (let start = 0; start < values.length;) {
+      let end = start
+      let estimate = 0
+      do { estimate += valueSize(leaf, values[end++]) }
+      while (end < values.length && estimate < this.#pageTarget)
+      let present = 0
+      for (let i = start; i < end; i++) if (values[i] !== null) present++
+      ranges.push({ start, end, present })
+      start = end
+    }
+
+    const chunkStart = this.#offset
+    let rawSize = 0n
+    let dictionaryOffset
+    let indexes
+    const candidate = this.#dictionaryLimit ? dictionary(leaf, values, this.#dictionaryLimit) : undefined
+    if (candidate) {
+      let cursor = 0
+      const encoded = ranges.map(({ present }) => {
+        const out = new Bytes()
+        out.byte(candidate.width)
+        hybrid(out, candidate.ids.slice(cursor, cursor + present), candidate.width)
+        cursor += present
+        return out.finish()
+      })
+      const bytes = new Bytes()
+      plain(bytes, leaf, candidate.entries)
+      const raw = bytes.finish()
+      const addedBytes = dictionaryHeader(raw.length, raw.length, candidate.entries.length).length
+      if (candidate.dictionarySize + addedBytes + encoded.reduce((sum, item) => sum + item.length, 0) < candidate.plainSize) {
+        indexes = encoded
+        dictionaryOffset = this.#offset
+        const packed = await this.#pack(raw)
+        const header = dictionaryHeader(raw.length, packed.length, candidate.entries.length)
+        rawSize += BigInt(header.length + raw.length)
+        await this.#write(header)
+        await this.#write(packed)
+      }
+    }
+    const offset = this.#offset
+    const total = { nulls: 0n, unsafe: false }
+    for (const [index, { start, end, present }] of ranges.entries()) {
+      const page = values.slice(start, end)
+      const definitions = leaf.nullable ? page.map(value => value === null ? 0 : 1) : []
+      const encoded = present ? indexes?.[index] : undefined
+      const raw = dataPage(leaf, page, definitions, leaf.nullable ? 1 : 0, [], 0, encoded)
+      const packed = await this.#pack(raw)
+      const bounds = this.#statisticsLimit ? pageBounds(page, this.#statisticsLimit) : undefined
+      if (bounds) mergeBounds(total, bounds)
+      const header = pageHeader(raw.length, page.length, packed.length, encoded ? 8 : 0,
+        bounds && encodeBounds(leaf, bounds))
+      rawSize += BigInt(header.length + raw.length)
+      await this.#write(header)
+      await this.#write(packed)
+    }
+    const stats = this.#statisticsLimit ? encodeBounds(leaf, total) : undefined
+    return { leaf, offset, size: this.#offset - chunkStart, rawSize, codec: this.#codec, dictionaryOffset, stats }
+  }
+
+  /** @param {Uint8Array} bytes */
+  async #pack(bytes) {
+    this.#check()
+    const packed = this.#compress ? await this.#compress(bytes) : bytes
+    if (!(packed instanceof Uint8Array)) throw new TypeError('Compressor must return Uint8Array')
+    return packed
   }
 
   close() {

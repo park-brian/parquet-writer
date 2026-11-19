@@ -1,6 +1,6 @@
 # Implementation roadmap
 
-Slices 1 and 2 are complete. Slices 3–7 describe the remaining implementation.
+Slices 1–3 are complete. Slices 4–7 describe the remaining implementation.
 Column vectors currently feed normalized group buffers. Benchmark the direct
 typed-array path in slice 7 before adding a second buffering representation.
 

@@ -39,6 +39,8 @@ export function normalize(leaf, value) {
       if (typeof value === 'bigint' && value >= -(1n << 63n) && value < (1n << 63n)) return value
       break
     case 'float':
+      if (typeof value === 'number') return Math.fround(value)
+      break
     case 'double':
       if (typeof value === 'number') return value
       break
@@ -108,13 +110,14 @@ export function levels(out, values, width) {
 /**
  * @param {Leaf} leaf @param {Value[]} values
  * @param {number[]} [definitions] @param {number} [definitionWidth]
- * @param {number[]} [repetitions] @param {number} [repetitionWidth]
+ * @param {number[]} [repetitions] @param {number} [repetitionWidth] @param {Uint8Array} [encoded]
  */
-export function dataPage(leaf, values, definitions = [], definitionWidth = 0, repetitions = [], repetitionWidth = 0) {
+export function dataPage(leaf, values, definitions = [], definitionWidth = 0, repetitions = [], repetitionWidth = 0, encoded) {
   const payload = new Bytes()
   levels(payload, repetitions, repetitionWidth)
   levels(payload, definitions, definitionWidth)
-  plain(payload, leaf, values)
+  if (encoded) payload.append(encoded)
+  else plain(payload, leaf, values)
   return payload.finish()
 }
 

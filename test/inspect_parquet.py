@@ -19,7 +19,10 @@ with open(sys.argv[1], "rb") as source:
         group = file.metadata.row_group(i)
         for i in range(group.num_columns):
             chunk = group.column(i)
-            assert chunk.data_page_offset == offset
+            assert (chunk.dictionary_page_offset or chunk.data_page_offset) == offset
             offset += chunk.total_compressed_size
     source.seek(-8, 2)
     assert offset == source.tell() - int.from_bytes(source.read(4), "little")
+    assert parquet.read_table(sys.argv[1], filters=[("value", ">=", 10)]).to_pylist() == [
+        row for row in expected if row["value"] is not None and row["value"] >= 10
+    ]

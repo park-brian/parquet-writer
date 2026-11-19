@@ -17,7 +17,7 @@ test('writes readable pages and exact chunk offsets', async () => {
   const metadata = parquetMetadata(file)
   let offset = 4n
   for (const { meta_data: chunk } of metadata.row_groups[0].columns) {
-    assert.equal(chunk.data_page_offset, offset)
+    assert.equal(chunk.dictionary_page_offset ?? chunk.data_page_offset, offset)
     offset += chunk.total_compressed_size
   }
   const view = new DataView(file)

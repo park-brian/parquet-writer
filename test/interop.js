@@ -20,8 +20,11 @@ const nullable = rows.map((row, i) => i % 3 ? row : { ...row, value: null, label
 await check('populated', schema, rows)
 await check('empty', schema, [])
 await check('nullable', optionalSchema, nullable, { rowGroupRows: 13, pageByteTarget: 18 })
+await check('plain', optionalSchema, nullable, { codec: 'UNCOMPRESSED', dictionary: false })
+await check('dictionary', schema, rows, { codec: 'UNCOMPRESSED' }, true)
+await check('snappy-plain', schema, rows, { dictionary: false })
 
-async function check(name, schema, data, options = {}) {
+async function check(name, schema, data, options = {}, inspectDictionary = false) {
   const filename = join(directory, name + '.parquet').replaceAll('\\', '/')
   const bytes = await writeParquetBuffer({ schema, rows: data, ...options })
   const groupCount = Math.ceil(data.length / (options.rowGroupRows || 65_536))
@@ -31,6 +34,10 @@ async function check(name, schema, data, options = {}) {
     '-json', '-c', `SELECT * FROM read_parquet('${filename}') ORDER BY id`,
   ])
   assert.deepEqual(JSON.parse(result.trim() || '[]'), data)
+  const filtered = run(process.env.DUCKDB || 'duckdb', [
+    '-json', '-c', `SELECT * FROM read_parquet('${filename}') WHERE value >= 10 ORDER BY id`,
+  ])
+  assert.deepEqual(JSON.parse(filtered.trim() || '[]'), data.filter(row => row.value >= 10))
 
   run(process.env.PYTHON || 'python', ['test/inspect_parquet.py', filename], {
     input: JSON.stringify({ data, groupCount }),
@@ -38,7 +45,7 @@ async function check(name, schema, data, options = {}) {
 
   const jar = process.env.PARQUET_CLI_JAR ||
     '_references/cbiit-parquet-cli/bin/parquet-cli-1.15.2.jar'
-  const java = command => run('java', ['-jar', jar, command, filename])
+  const java = (command, ...args) => run('java', ['-jar', jar, command, filename, ...args])
   const footer = JSON.parse(java('footer'))
   assert.equal(footer.blocks.length, groupCount)
   assert.deepEqual(footer.fileMetaData.schema.fields.map(field => field.name), schema.fields.map(field => field.name))
@@ -46,5 +53,6 @@ async function check(name, schema, data, options = {}) {
     const pages = java('pages')
     for (const field of schema.fields) assert.ok(pages.includes('Column: ' + field.name))
   }
+  if (inspectDictionary) assert.match(java('dictionary', '-c', 'label'), /caf/)
   console.log(`${name}: DuckDB, PyArrow, and Parquet Java agree`)
 }
