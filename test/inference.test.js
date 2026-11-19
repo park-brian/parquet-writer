@@ -72,3 +72,12 @@ test('infers streamed column widths after empty leading batches', async () => {
   const file = (await writeParquetBuffer({ columns: columns(), rowGroupRows: 1 })).buffer
   assert.deepEqual((await parquetReadObjects({ file })).map(row => row.id), [0n, (1n << 64n) - 1n])
 })
+
+test('requires consistent column names inside and beyond the sample', async () => {
+  for (const rowGroupRows of [1, 10]) {
+    await assert.rejects(writeParquetBuffer({ rowGroupRows, columns: [
+      { rowCount: 1, columns: { x: [1] } },
+      { rowCount: 1, columns: { y: [2] } },
+    ] }), /Invalid vector for x/)
+  }
+})

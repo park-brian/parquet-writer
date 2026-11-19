@@ -382,7 +382,7 @@ export async function writeParquet(input) {
         await writer.writeRows(prefix)
         prefix.length = 0
         await writer.flush()
-        await writer.writeRows(replay(source, schema.fields.map(field => field.name)))
+        await writer.writeRows(replay(source))
         return await writer.close()
       }
     }
@@ -415,26 +415,25 @@ async function* samples(input) {
   }
   const columns = /** @type {NonNullable<Input['columns']>} */ (input.columns)
   const batches = 'rowCount' in columns ? [columns] : columns
+  /** @type {string[] | undefined} */
+  let batchNames
   for await (const batch of batches) {
     if (!batch?.columns) throw new TypeError('Expected a column batch')
     const names = Object.keys(batch.columns)
-    const vectors = readVectors(batch, names)
-    const types = Object.fromEntries(names.map((name, i) => [name, vectorType(vectors[i].values)]))
+    if (batch.rowCount) batchNames ??= names
+    const vectors = readVectors(batch, batch.rowCount ? (batchNames ?? names) : names)
+    const order = batchNames ?? names
+    const types = Object.fromEntries(order.map((name, i) => [name, vectorType(vectors[i].values)]))
     for (let index = 0; index < batch.rowCount; index++) {
-      const row = Object.fromEntries(names.map((name, i) => [name, vectorValue(vectors[i], index)]))
+      const row = Object.fromEntries(order.map((name, i) => [name, vectorValue(vectors[i], index)]))
       yield { row, types }
     }
   }
 }
 
-/** @param {AsyncGenerator<{row: Row, types?: object}>} source @param {string[]} names */
-async function* replay(source, names) {
-  for await (const { row, types } of source) {
-    if (types && (Object.keys(types).length !== names.length || names.some(name => !Object.hasOwn(types, name)))) {
-      throw new TypeError('Column names must match the inferred schema')
-    }
-    yield row
-  }
+/** @param {AsyncGenerator<{row: Row}>} source */
+async function* replay(source) {
+  for await (const { row } of source) yield row
 }
 
 /** @param {Input} input */

@@ -130,6 +130,8 @@ the schema. Empty leading batches supply no evidence. Empty input needs a schema
   A Uint8Array used as an entire column vector is uint8, not one binary cell.
 - Objects infer structs from the union of sampled field names, in first-seen order.
   Arrays infer homogeneous lists; Maps infer homogeneous key and value types.
+  Map keys supplied as numbers need an integer schema hint.
+  All nonempty column batches must have the same field names.
 - Inferred fields/elements/values are nullable; map keys are required. Typed-array
   width evidence is usable even without non-null values.
 - Null-only fields, empty collections without element evidence, mixed incompatible
