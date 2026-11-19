@@ -261,7 +261,8 @@ been written. The operation still rejects because sink completion failed.
   Use logical ordering: unsigned integers, UTF-8/binary unsigned bytes, numeric
   decimal, UUID bytes, and signed temporal values. Bounds omit BYTE_ARRAY length
   prefixes. All-null ranges have no bounds. NaN-containing page/chunk ranges omit
-  bounds; signed zero bounds preserve -0 minimum and +0 maximum. If either binary
+  bounds. Emit nan_count for floating-point statistics, including zero, and
+  write a zero minimum as -0 and a zero maximum as +0. If either binary
   bound exceeds statisticsMaxBytes, omit both. Merge bounds from pages with safe
   bounds and skip all-null pages. A page with non-null values and unsafe bounds
   makes chunk bounds unsafe. Sum null counts independently of bounds.

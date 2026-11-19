@@ -17,6 +17,15 @@ test('dictionary widths follow the highest present ID', () => {
   }
 })
 
+test('binary dictionary resolves hash collisions by comparing bytes', () => {
+  const [leaf] = compile({ fields: [{ name: 'label', type: 'binary' }] })
+  const a = Uint8Array.of(33, 18, 201, 71, 204, 132, 123, 227)
+  const b = Uint8Array.of(207, 109, 179, 156, 38, 246, 42, 176)
+  const candidate = dictionary(leaf, [a, b, a.slice(), b.slice()], 24)
+  assert.deepEqual(candidate.entries, [a, b])
+  assert.deepEqual(candidate.ids, [0, 1, 0, 1])
+})
+
 test('comparison preserves zero sign and handles unsafe pages separately from nulls', () => {
   const [leaf] = compile({ fields: [{ name: 'x', type: 'double' }] })
   const bounds = pageBounds([Infinity, -Infinity, null], 4096)
@@ -29,7 +38,17 @@ test('comparison preserves zero sign and handles unsafe pages separately from nu
   assert.ok(Object.is(new DataView(zeros.min.buffer).getFloat64(0, true), -0))
   assert.ok(Object.is(new DataView(zeros.max.buffer).getFloat64(0, true), 0))
   mergeBounds(bounds, pageBounds([NaN], 4096))
-  assert.deepEqual(encodeBounds(leaf, bounds), { nulls: 3n })
+  assert.deepEqual(encodeBounds(leaf, bounds), { nulls: 3n, nans: 1n })
+})
+
+test('string bounds follow unsigned UTF-8 bytes and omit oversized extremes', () => {
+  const [leaf] = compile({ fields: [{ name: 'label', type: 'string' }] })
+  const text = new TextEncoder()
+  const values = [text.encode('𐀀'), text.encode('\ue000')]
+  const stats = encodeBounds(leaf, pageBounds(values, 4))
+  assert.deepEqual(stats.min, values[1])
+  assert.deepEqual(stats.max, values[0])
+  assert.deepEqual(encodeBounds(leaf, pageBounds(values, 3)), { nulls: 0n })
 })
 
 test('dictionary offsets and async compression survive decoding', async () => {

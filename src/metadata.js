@@ -66,12 +66,13 @@ export function encodeCompact(fields) {
   return out.finish()
 }
 
-/** @typedef {{nulls: bigint, min?: Uint8Array, max?: Uint8Array}} Statistics */
+/** @typedef {{nulls: bigint, nans?: bigint, min?: Uint8Array, max?: Uint8Array}} Statistics */
 
 /** @param {Statistics} stats @returns {Field[]} */
-function statistics({ nulls, min, max }) {
+function statistics({ nulls, nans, min, max }) {
   const fields = /** @type {Field[]} */ ([[3, I64, nulls]])
   if (min && max) fields.push([5, BINARY, max], [6, BINARY, min], [7, TRUE, true], [8, TRUE, true])
+  if (nans !== undefined) fields.push([9, I64, nans])
   return fields
 }
 

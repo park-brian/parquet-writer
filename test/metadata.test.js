@@ -23,3 +23,8 @@ test('encodes 64-bit extrema without rounding', () => {
   bytes.varint(128)
   assert.equal(hex(bytes.finish()), 'ffffffffffffffffff01feffffffffffffffff018001')
 })
+
+test('writes floating-point NaN counts even when zero', () => {
+  const header = pageHeader(8, 1, 8, 0, { nulls: 0n, nans: 0n, min: Uint8Array.of(1), max: Uint8Array.of(2) })
+  assert.equal(hex(header), '1500151015102c15021500150615061c360028010218010111111600000000')
+})

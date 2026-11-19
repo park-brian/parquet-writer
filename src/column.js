@@ -4,7 +4,7 @@ import { plain } from './pages.js'
 /** @typedef {import('./pages.js').Value} Value */
 /** @typedef {import('./pages.js').Leaf} Leaf */
 /** @typedef {Exclude<Value, null>} Present */
-/** @typedef {{nulls: bigint, unsafe: boolean, min?: Present, max?: Present}} Bounds */
+/** @typedef {{nulls: bigint, nans: bigint, unsafe: boolean, min?: Present, max?: Present}} Bounds */
 
 /** @param {Present} a @param {Present} b */
 function compare(a, b) {
@@ -28,10 +28,13 @@ function include(bounds, value) {
 /** @param {Value[]} values @param {number} limit @returns {Bounds} */
 export function pageBounds(values, limit) {
   /** @type {Bounds} */
-  const bounds = { nulls: 0n, unsafe: false }
+  const bounds = { nulls: 0n, nans: 0n, unsafe: false }
   for (const value of values) {
     if (value === null) bounds.nulls++
-    else if (Number.isNaN(value)) bounds.unsafe = true
+    else if (Number.isNaN(value)) {
+      bounds.nans++
+      bounds.unsafe = true
+    }
     else include(bounds, value)
   }
   if ((bounds.min instanceof Uint8Array && bounds.min.length > limit) ||
@@ -42,13 +45,14 @@ export function pageBounds(values, limit) {
 /** @param {Bounds} total @param {Bounds} page */
 export function mergeBounds(total, page) {
   total.nulls += page.nulls
+  total.nans += page.nans
   total.unsafe ||= page.unsafe
   if (page.min !== undefined) include(total, page.min)
   if (page.max !== undefined) include(total, page.max)
 }
 
 /** @param {Leaf} leaf @param {Bounds} bounds */
-export function encodeBounds(leaf, { nulls, unsafe, min, max }) {
+export function encodeBounds(leaf, { nulls, nans, unsafe, min, max }) {
   /** @param {Present} value */
   function encode(value) {
     if (value instanceof Uint8Array) return value
@@ -56,8 +60,10 @@ export function encodeBounds(leaf, { nulls, unsafe, min, max }) {
     plain(out, leaf, [value])
     return out.finish()
   }
-  if (unsafe || min === undefined || max === undefined) return { nulls }
-  return { nulls, min: encode(min), max: encode(max) }
+  const floating = leaf.physical === 4 || leaf.physical === 5
+  const counts = floating ? { nulls, nans } : { nulls }
+  if (unsafe || min === undefined || max === undefined) return counts
+  return { ...counts, min: encode(floating && min === 0 ? -0 : min), max: encode(floating && max === 0 ? 0 : max) }
 }
 
 /** @param {Uint8Array} bytes */

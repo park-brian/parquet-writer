@@ -233,7 +233,7 @@ export class ParquetWriter {
       }
     }
     const offset = this.#offset
-    const total = { nulls: 0n, unsafe: false }
+    const total = { nulls: 0n, nans: 0n, unsafe: false }
     for (const [index, { start, end, present }] of ranges.entries()) {
       const page = values.slice(start, end)
       const definitions = leaf.nullable ? page.map(value => value === null ? 0 : 1) : []
