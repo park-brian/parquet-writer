@@ -31,6 +31,7 @@ export function compileSchema(schema) {
     if (!field || active.has(identity)) throw new TypeError('Invalid or cyclic schema')
     active.add(identity)
     const { name, type, nullable = true } = field
+    if (typeof nullable !== 'boolean') throw new TypeError('Expected boolean nullability for ' + name)
     const path = [...parent, name]
     const definition = def + Number(nullable)
     const firstLeaf = leaves.length
@@ -69,7 +70,8 @@ export function compileSchema(schema) {
       leaves.push(leaf)
     }
     active.delete(identity)
-    return { field, children, definition, repetition: nodeRep, firstLeaf, endLeaf: leaves.length, leaf: element.leaf }
+    return { field: { ...field, nullable }, children, definition, repetition: nodeRep,
+      firstLeaf, endLeaf: leaves.length, leaf: element.leaf }
   }
 
   return { roots: siblings(schema?.fields, [], 0, 0), elements, leaves }

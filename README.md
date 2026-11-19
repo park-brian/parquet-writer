@@ -12,3 +12,16 @@ inferred schemas. It supports nullable primitives, analytical logical types,
 structs, lists, and maps. Snappy, dictionary encoding, and statistics are on by
 default. See the [examples](examples/export.js) for typed arrays, nested rows,
 and file and web stream output.
+
+```js
+import { writeParquetBuffer } from 'parquet-writer'
+
+const bytes = await writeParquetBuffer({
+  rows: [{ name: 'Ada', score: 7 }, { name: 'Grace', score: null }],
+})
+```
+
+Use `writeParquet` with a sink when the output should grow on disk or in a
+stream instead of memory. Stream inference fixes the schema after the first
+bounded group. Supply an explicit schema for empty input or stable column
+types, and use `BigInt` for exact 64-bit integers and unscaled decimals.

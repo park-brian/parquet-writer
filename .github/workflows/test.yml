@@ -1,0 +1,30 @@
+name: Test writer
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '23 6 * * 1'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:property
+      - name: Explore additional schemas
+        if: github.event_name == 'schedule'
+        run: npm run test:property
+        env:
+          PARQUET_SEED: ${{ github.run_number }}
+          PARQUET_RUNS: 1500
+      - run: npm run test:package
+      - run: npx playwright install --with-deps chromium firefox webkit
+      - run: npm run test:browser

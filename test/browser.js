@@ -4,6 +4,7 @@ import { createServer } from 'node:http'
 import { chromium, firefox, webkit } from 'playwright'
 import { parquetReadObjects } from 'hyparquet'
 import { rows, schema } from './fixture.js'
+import { nestedRows, nestedSchema } from './nested-fixture.js'
 
 const modules = new Map()
 for (const filename of await readdir(new URL('../src/', import.meta.url))) {
@@ -27,6 +28,18 @@ try {
         return Array.from(await writeParquetBuffer(input))
       }, { schema, rows })
       assert.deepEqual(await parquetReadObjects({ file: Uint8Array.from(bytes).buffer }), rows)
+      const nested = await page.evaluate(async input => {
+        const { writeParquet } = await import('/index.js')
+        const { webSink } = await import('/web.js')
+        input.rows[1].attributes = new Map()
+        input.rows[2].attributes = new Map([['a', null], ['b', 2]])
+        const chunks = []
+        const stream = new WritableStream({ write(chunk) { chunks.push(...chunk) } })
+        await writeParquet({ ...input, sink: webSink(stream), rowGroupRows: 2 })
+        return chunks
+      }, { schema: nestedSchema, rows: nestedRows.map(row => ({ ...row, attributes: null })) })
+      const decoded = await parquetReadObjects({ file: Uint8Array.from(nested).buffer })
+      assert.deepEqual(decoded.map(row => row.numbers ?? null), [null, [], [1, null, 2]])
       console.log(`${engine.name()}: wrote a readable file`)
     } finally {
       await browser.close()

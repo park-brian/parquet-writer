@@ -87,6 +87,19 @@ test('rejects overlap and shares a successful close', async () => {
   assert.equal(stream.locked, false)
 })
 
+test('compiles the schema once before callers can edit it', async () => {
+  const field = { name: 'score', type: 'int32' }
+  const chunks = []
+  const writer = new ParquetWriter({ schema: { fields: [field] }, sink: {
+    write(bytes) { chunks.push(bytes) },
+  } })
+  field.name = 'renamed'
+  await writer.writeRows([{ score: 7 }])
+  await writer.close()
+  const file = Uint8Array.from(Buffer.concat(chunks)).buffer
+  assert.deepEqual(await parquetReadObjects({ file }), [{ score: 7 }])
+})
+
 test('aborts once when cancellation interrupts a write', async () => {
   const { promise, resolve } = Promise.withResolvers()
   const { promise: entered, resolve: start } = Promise.withResolvers()

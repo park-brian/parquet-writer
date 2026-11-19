@@ -29,11 +29,18 @@
     "build:types": "tsc --types node --allowJs --checkJs --strict --declaration --emitDeclarationOnly --target es2022 --module nodenext --outDir types src/index.js src/node.js src/web.js",
     "prepack": "npm run build:types",
     "test:interop": "node test/interop.js",
-    "test:browser": "node test/browser.js"
+    "test:browser": "node test/browser.js",
+    "test:large": "node test/large.js",
+    "test:property": "node --test test/property.js",
+    "test:package": "node test/package.js",
+    "bench": "node bench/run.js",
+    "bench:corpus": "node bench/corpus.js"
   },
   "devDependencies": {
     "@types/node": "22.20.5",
+    "fast-check": "4.10.3",
     "hyparquet": "1.33.1",
+    "hyparquet-writer": "0.18.0",
     "playwright": "1.65.1",
     "typescript": "7.0.2"
   }

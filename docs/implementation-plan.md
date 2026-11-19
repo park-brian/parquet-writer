@@ -1,6 +1,7 @@
 # Implementation roadmap
 
-Slices 1–6 are complete. Slice 7 covers release verification and benchmarks.
+All seven slices are implemented and verified locally.
+See [the benchmark notes](../bench/README.md) for measurements and scale runs.
 Complete groups of required numeric vectors can write directly from typed-array
 views. Pending tails and other columns use normalized group buffers.
 
