@@ -141,8 +141,8 @@ function annotations(leaf) {
   }
 }
 
-/** @param {ReturnType<typeof import('./schema.js').compileSchema>} compiled @param {Group[]} rowGroups @param {bigint} count */
-export function footer({ leaves, elements }, rowGroups, count) {
+/** @param {ReturnType<typeof import('./schema.js').compileSchema>} compiled @param {Group[]} rowGroups @param {bigint} count @param {{key: string, value?: string}[]} keyValues @param {string} createdBy */
+export function footer({ leaves, elements }, rowGroups, count, keyValues, createdBy) {
   const schema = elements.map(({ name, repetition, leaf, children, logical }, index) => {
     /** @type {Field[]} */
     const field = []
@@ -175,8 +175,11 @@ export function footer({ leaves, elements }, rowGroups, count) {
   })
   const metadata = /** @type {Field[]} */ ([
     [1, I32, 1], [2, LIST, [STRUCT, schema]], [3, I64, count],
-    [4, LIST, [STRUCT, groups]], [6, BINARY, 'parquet-writer version 0.0.1'],
+    [4, LIST, [STRUCT, groups]],
   ])
+  if (keyValues.length) metadata.push([5, LIST, [STRUCT, keyValues.map(({ key, value }) =>
+    value === undefined ? [[1, BINARY, key]] : [[1, BINARY, key], [2, BINARY, value]])]])
+  metadata.push([6, BINARY, createdBy])
   if (rowGroups.some(group => group.chunks.some(chunk => chunk.stats))) {
     metadata.push([7, LIST, [STRUCT, leaves.map(() => [[1, STRUCT, []]])]])
   }

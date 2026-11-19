@@ -100,8 +100,8 @@ little endian. Metadata emits logical annotations and compatible converted
 annotations where specified by the pinned format, including decimal scale/precision.
 
 Map keys in v1 are supported scalar types except float/double, with no null keys;
-values may be nested. Preserve insertion order. Map input avoids ambiguous object
-key coercion and duplicate-key list semantics. Cyclic input is rejected. Reject
+values may be nested. Preserve insertion order. Reject distinct JavaScript keys
+that encode to the same Parquet key. Cyclic input is rejected. Reject
 sparse list arrays; explicit null list elements remain supported.
 
 ### Options and inference

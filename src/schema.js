@@ -123,8 +123,15 @@ export function shred(node, input, def, rep, emit, active) {
       if (!(input instanceof Map)) throw new TypeError('Expected a Map for ' + name)
       if (!input.size) absent(definition)
       let entryRep = rep
+      const keys = new Set()
+      const keyNode = children[0]
+      const keyLeaf = /** @type {Leaf} */ (keyNode.leaf)
       for (const [key, value] of input) {
-        shred(children[0], key, definition + 1, entryRep, emit, active)
+        const normalized = normalize(keyLeaf, key)
+        const identity = normalized instanceof Uint8Array ? normalized.join(',') : normalized
+        if (keys.has(identity)) throw new TypeError('Duplicate encoded map key for ' + name)
+        keys.add(identity)
+        emit(keyNode.firstLeaf, normalized, keyNode.definition, entryRep)
         shred(children[1], value, definition + 1, entryRep, emit, active)
         entryRep = repetition
       }

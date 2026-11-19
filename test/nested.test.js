@@ -26,3 +26,11 @@ test('rejects null map keys, sparse lists, and cyclic schemas', async () => {
   list.element = list
   await assert.rejects(writeParquetBuffer({ schema: { fields: [{ ...list, name: 'x' }] }, rows: [] }), /cyclic schema/)
 })
+
+test('rejects distinct JavaScript keys that encode to the same map key', async () => {
+  const schema = { fields: [{
+    name: 'pairs', type: 'map', key: { type: 'int64' }, value: { type: 'string' },
+  }] }
+  const rows = [{ pairs: new Map([[1, 'first'], [1n, 'second']]) }]
+  await assert.rejects(writeParquetBuffer({ schema, rows }), /Duplicate encoded map key/)
+})

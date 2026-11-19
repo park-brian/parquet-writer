@@ -4,6 +4,7 @@ import { dataPage, hybrid, normalize, plain, valueSize } from './pages.js'
 import { compileSchema, shred } from './schema.js'
 import { dictionary, encodeBounds, mergeBounds, pageBounds } from './column.js'
 import { snappy } from './snappy.js'
+import { schemaInference, vectorType } from './infer.js'
 
 const magic = Uint8Array.of(80, 65, 82, 49)
 const codecIds = { UNCOMPRESSED: 0, SNAPPY: 1, GZIP: 2, LZO: 3, BROTLI: 4, LZ4: 5, ZSTD: 6, LZ4_RAW: 7 }
@@ -17,8 +18,9 @@ const codecIds = { UNCOMPRESSED: 0, SNAPPY: 1, GZIP: 2, LZO: 3, BROTLI: 4, LZ4: 
 /** @template T @typedef {Iterable<T> | AsyncIterable<T>} Source */
 /** @typedef {keyof typeof codecIds} Codec */
 /** @typedef {(bytes: Uint8Array) => Uint8Array | Promise<Uint8Array>} Compressor */
-/** @typedef {{ schema: Schema, rowGroupRows?: number, rowGroupByteTarget?: number, pageByteTarget?: number, signal?: AbortSignal, codec?: Codec, codecs?: Partial<Record<Codec, Compressor>>, dictionary?: 'auto' | false, dictionaryByteLimit?: number, statistics?: boolean, statisticsMaxBytes?: number }} Options */
-/** @typedef {Options & ({ rows: Source<Row>, columns?: never } | { columns: Batch | Source<Batch>, rows?: never })} Input */
+/** @typedef {{key: string, value?: string}} KeyValue */
+/** @typedef {{ schema: Schema, rowGroupRows?: number, rowGroupByteTarget?: number, pageByteTarget?: number, signal?: AbortSignal, codec?: Codec, codecs?: Partial<Record<Codec, Compressor>>, dictionary?: 'auto' | false, dictionaryByteLimit?: number, statistics?: boolean, statisticsMaxBytes?: number, metadata?: KeyValue[], createdBy?: string }} Options */
+/** @typedef {Omit<Options, 'schema'> & {schema?: Schema, schemaHints?: Schema} & ({ rows: Source<Row>, columns?: never } | { columns: Batch | Source<Batch>, rows?: never })} Input */
 /** @typedef {{ write(bytes: Uint8Array): void | Promise<void>, close?(): void | Promise<void>, abort?(reason: unknown): void | Promise<void> }} Sink */
 
 export class ParquetWriter {
@@ -32,6 +34,8 @@ export class ParquetWriter {
   #codec
   #dictionaryLimit
   #statisticsLimit
+  #metadata
+  #createdBy
   /** @type {Column[]} */
   #columns
   #rows = 0
@@ -52,7 +56,8 @@ export class ParquetWriter {
 
   /** @param {Options & { sink: Sink }} options */
   constructor({ schema, sink, signal, rowGroupRows = 65_536, rowGroupByteTarget = 64 * 1024 * 1024, pageByteTarget = 1024 * 1024,
-    codec = 'SNAPPY', codecs, dictionary = 'auto', dictionaryByteLimit = 1024 * 1024, statistics = true, statisticsMaxBytes = 4096 }) {
+    codec = 'SNAPPY', codecs, dictionary = 'auto', dictionaryByteLimit = 1024 * 1024, statistics = true, statisticsMaxBytes = 4096,
+    metadata = [], createdBy = 'parquet-writer version 0.0.1' }) {
     for (const size of [rowGroupRows, rowGroupByteTarget, pageByteTarget, dictionaryByteLimit, statisticsMaxBytes]) {
       if (!Number.isSafeInteger(size) || size < 1 || size > 0x7fffffff) {
         throw new RangeError('Expected positive size targets within the Parquet i32 limit')
@@ -66,6 +71,12 @@ export class ParquetWriter {
     this.#codec = codecIds[codec]
     this.#dictionaryLimit = dictionary === false ? 0 : dictionaryByteLimit
     this.#statisticsLimit = statistics ? statisticsMaxBytes : 0
+    if (!Array.isArray(metadata) || typeof createdBy !== 'string') throw new TypeError('Invalid file metadata')
+    this.#metadata = metadata.map(({ key, value }) => {
+      if (typeof key !== 'string' || (value !== undefined && typeof value !== 'string')) throw new TypeError('Invalid key/value metadata')
+      return { key, value }
+    })
+    this.#createdBy = createdBy
     this.#schema = compileSchema(schema)
     this.#columns = this.#schema.leaves.map(() => ({ values: [], definitions: [], repetitions: [], rowEnds: [] }))
     this.#sink = sink
@@ -133,28 +144,12 @@ export class ParquetWriter {
   /** @param {Batch} batch */
   writeColumns(batch) {
     return this.#run(async () => {
-      const { rowCount, columns } = batch
-      if (!Number.isSafeInteger(rowCount) || rowCount < 0) throw new RangeError('Invalid row count')
-      if (!columns || Object.keys(columns).length !== this.#schema.roots.length) throw new TypeError('Column names must match schema')
-      const vectors = this.#schema.roots.map(({ field: { name } }) => {
-        const column = Object.hasOwn(columns, name) ? columns[name] : undefined
-        const wrapped = column && Object.hasOwn(column, 'values')
-        const descriptor = /** @type {{values: Vector, validity?: Uint8Array}} */ (column)
-        const values = wrapped ? descriptor.values : /** @type {Vector | undefined} */ (column)
-        const validity = wrapped ? descriptor.validity : undefined
-        if (!values || (!Array.isArray(values) && (!ArrayBuffer.isView(values) || values instanceof DataView)) || values.length !== rowCount) {
-          throw new TypeError(`Invalid vector for ${name}`)
-        }
-        if (validity !== undefined && (!(validity instanceof Uint8Array) || validity.length !== Math.ceil(rowCount / 8))) {
-          throw new TypeError(`Invalid validity bitmap for ${name}`)
-        }
-        return { values, validity }
-      })
+      const { rowCount } = batch
+      const vectors = readVectors(batch, this.#schema.roots.map(root => root.field.name))
       for (let row = 0; row < rowCount; row++) {
         this.#check()
         this.#append((_, index) => {
-          const { values, validity } = vectors[index]
-          return !validity || validity[row >>> 3] & (1 << (row & 7)) ? values[row] : null
+          return vectorValue(vectors[index], row)
         })
         if (this.#groupReady()) await this.#flush()
       }
@@ -295,7 +290,7 @@ export class ParquetWriter {
     this.#closing = this.#run(async () => {
       await this.#flush()
       if (!this.#offset) await this.#write(magic.slice())
-      const metadata = footer(this.#schema, this.#groups, this.#rowCount)
+      const metadata = footer(this.#schema, this.#groups, this.#rowCount, this.#metadata, this.#createdBy)
       if (metadata.length > 0xffffffff) throw new RangeError('Footer exceeds Parquet uint32 limit')
       const trailer = new Bytes()
       trailer.i32(metadata.length)
@@ -325,14 +320,73 @@ export class ParquetWriter {
   }
 }
 
+/** @param {Batch} batch @param {string[]} names */
+function readVectors(batch, names) {
+  const { rowCount, columns } = batch
+  if (!Number.isSafeInteger(rowCount) || rowCount < 0) throw new RangeError('Invalid row count')
+  if (!columns || Object.keys(columns).length !== names.length) throw new TypeError('Column names must match schema')
+  const vectors = names.map(name => {
+    const column = Object.hasOwn(columns, name) ? columns[name] : undefined
+    const wrapped = column && Object.hasOwn(column, 'values')
+    const descriptor = /** @type {{values: Vector, validity?: Uint8Array}} */ (column)
+    const values = wrapped ? descriptor.values : /** @type {Vector | undefined} */ (column)
+    const validity = wrapped ? descriptor.validity : undefined
+    if (!values || (!Array.isArray(values) && (!ArrayBuffer.isView(values) || values instanceof DataView)) || values.length !== rowCount) {
+      throw new TypeError(`Invalid vector for ${name}`)
+    }
+    if (validity !== undefined && (!(validity instanceof Uint8Array) || validity.length !== Math.ceil(rowCount / 8))) {
+      throw new TypeError(`Invalid validity bitmap for ${name}`)
+    }
+    return { values, validity }
+  })
+  return vectors
+}
+
+/** @param {{values: Vector, validity?: Uint8Array}} vector @param {number} row */
+function vectorValue({ values, validity }, row) {
+  return !validity || validity[Math.floor(row / 8)] & (1 << (row & 7)) ? values[row] : null
+}
+
 /** @param {Input & { sink: Sink }} input */
 export async function writeParquet(input) {
   let writer
+  /** @type {AsyncGenerator<{row: Row, types?: Record<string, import('./pages.js').Type | undefined>}> | undefined} */
+  let source
   try {
     if ((input.rows === undefined) === (input.columns === undefined)) {
       throw new TypeError('Provide exactly one of rows or columns')
     }
-    writer = new ParquetWriter(input)
+    if (input.schema && input.schemaHints) throw new TypeError('Use a schema or schema hints')
+    let schema = input.schema
+    if (!schema) {
+      const inference = schemaInference(input.schemaHints)
+      source = samples(input)
+      const inMemory = Array.isArray(input.rows) || (input.columns && 'rowCount' in input.columns)
+      /** @type {Row[]} */
+      const prefix = []
+      let bytes = 0
+      for (;;) {
+        input.signal?.throwIfAborted()
+        const item = await source.next()
+        if (item.done) break
+        bytes += inference.observe(item.value.row, item.value.types)
+        if (!inMemory) {
+          prefix.push(structuredClone(item.value.row))
+          if (prefix.length >= (input.rowGroupRows ?? 65_536) ||
+              bytes >= (input.rowGroupByteTarget ?? 64 * 1024 * 1024)) break
+        }
+      }
+      schema = inference.finish()
+      if (!inMemory) {
+        writer = new ParquetWriter({ ...input, schema })
+        await writer.writeRows(prefix)
+        prefix.length = 0
+        await writer.flush()
+        await writer.writeRows(replay(source, schema.fields.map(field => field.name)))
+        return await writer.close()
+      }
+    }
+    writer = new ParquetWriter({ ...input, schema })
     if (input.rows !== undefined) {
       await writer.writeRows(input.rows)
     } else if (input.columns && 'rowCount' in input.columns) {
@@ -348,7 +402,38 @@ export async function writeParquet(input) {
     else {
       try { await input.sink.abort?.(error) } catch { /* Preserve the input error. */ }
     }
+    try { await source?.return(undefined) } catch { /* Preserve the write error. */ }
     throw error
+  }
+}
+
+/** @param {Input} input */
+async function* samples(input) {
+  if (input.rows !== undefined) {
+    for await (const row of input.rows) yield { row }
+    return
+  }
+  const columns = /** @type {NonNullable<Input['columns']>} */ (input.columns)
+  const batches = 'rowCount' in columns ? [columns] : columns
+  for await (const batch of batches) {
+    if (!batch?.columns) throw new TypeError('Expected a column batch')
+    const names = Object.keys(batch.columns)
+    const vectors = readVectors(batch, names)
+    const types = Object.fromEntries(names.map((name, i) => [name, vectorType(vectors[i].values)]))
+    for (let index = 0; index < batch.rowCount; index++) {
+      const row = Object.fromEntries(names.map((name, i) => [name, vectorValue(vectors[i], index)]))
+      yield { row, types }
+    }
+  }
+}
+
+/** @param {AsyncGenerator<{row: Row, types?: object}>} source @param {string[]} names */
+async function* replay(source, names) {
+  for await (const { row, types } of source) {
+    if (types && (Object.keys(types).length !== names.length || names.some(name => !Object.hasOwn(types, name)))) {
+      throw new TypeError('Column names must match the inferred schema')
+    }
+    yield row
   }
 }
 
