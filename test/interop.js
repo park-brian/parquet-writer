@@ -24,6 +24,38 @@ await check('plain', optionalSchema, nullable, { codec: 'UNCOMPRESSED', dictiona
 await check('dictionary', schema, rows, { codec: 'UNCOMPRESSED' }, true)
 await check('snappy-plain', schema, rows, { dictionary: false })
 
+const logicalFile = join(directory, 'logical.parquet').replaceAll('\\', '/')
+writeFileSync(logicalFile, await writeParquetBuffer({
+  schema: { fields: [
+    { name: 'u', type: 'uint64' },
+    { name: 'small', type: 'int8' },
+    { name: 'd', type: 'date' },
+    { name: 'tm', type: 'time', unit: 'millis' },
+    { name: 'tu', type: 'time', unit: 'micros' },
+    { name: 'tn', type: 'time', unit: 'nanos' },
+    { name: 'instant', type: 'timestamp', unit: 'micros' },
+    { name: 'local', type: 'timestamp', unit: 'nanos', isAdjustedToUTC: false },
+    { name: 'money', type: 'decimal', precision: 38, scale: 4 },
+    { name: 'money32', type: 'decimal', precision: 8, scale: 3 },
+    { name: 'money64', type: 'decimal', precision: 15, scale: 3 },
+    { name: 'key', type: 'uuid' },
+  ] },
+  rows: [{
+    u: 18446744073709551615n, small: -128, d: -1, tm: 1234, tu: 1234567n,
+    tn: 1234567890n, instant: -1234n, local: -123456789n,
+    money: -(10n ** 38n - 1n), money32: -1234n, money64: 1234567898765n,
+    key: '00112233-4455-6677-8899-aabbccddeeff',
+  }],
+}))
+run(process.env.PYTHON || 'python', ['test/inspect_logical.py', logicalFile])
+const logical = run(process.env.DUCKDB || 'duckdb', ['-json', '-c',
+  `SELECT u::VARCHAR AS u, money::VARCHAR AS money, key::VARCHAR AS key FROM read_parquet('${logicalFile}')`])
+assert.deepEqual(JSON.parse(logical), [{
+  u: '18446744073709551615', money: '-9999999999999999999999999999999999.9999',
+  key: '00112233-4455-6677-8899-aabbccddeeff',
+}])
+console.log('logical: DuckDB and PyArrow preserved exact values')
+
 async function check(name, schema, data, options = {}, inspectDictionary = false) {
   const filename = join(directory, name + '.parquet').replaceAll('\\', '/')
   const bytes = await writeParquetBuffer({ schema, rows: data, ...options })

@@ -5,6 +5,7 @@ const I32 = 5
 const I64 = 6
 const TRUE = 1
 const FALSE = 2
+const BYTE = 3
 const BINARY = 8
 const LIST = 9
 const STRUCT = 12
@@ -16,6 +17,9 @@ function writeValue(out, type, value) {
   switch (type) {
     case TRUE:
     case FALSE:
+      break
+    case BYTE:
+      out.byte(/** @type {number} */ (value))
       break
     case I32:
     case I64:
@@ -104,6 +108,39 @@ function checkPage(...sizes) {
 /** @typedef {{ leaf: Leaf, offset: bigint, size: bigint, rawSize: bigint, codec: number, dictionaryOffset?: bigint, stats?: Statistics }} Chunk */
 /** @typedef {{ chunks: Chunk[], count: number }} Group */
 
+/** @param {Leaf} leaf @returns {Field[]} */
+function annotations(leaf) {
+  if (leaf.integerBits) {
+    const bits = leaf.integerBits
+    const width = Math.log2(bits / 8)
+    return [
+      [6, I32, (leaf.signed ? 15 : 11) + width],
+      [10, STRUCT, [[10, STRUCT, [[1, BYTE, bits], [2, leaf.signed ? TRUE : FALSE, leaf.signed]]]]],
+    ]
+  }
+  switch (leaf.type) {
+    case 'string': return [[6, I32, 0], [10, STRUCT, [[1, STRUCT, []]]]]
+    case 'date': return [[6, I32, 6], [10, STRUCT, [[6, STRUCT, []]]]]
+    case 'uuid': return [[10, STRUCT, [[14, STRUCT, []]]]]
+    case 'decimal':
+      return [[6, I32, 5], [7, I32, leaf.scale], [8, I32, leaf.precision],
+        [10, STRUCT, [[5, STRUCT, [[1, I32, leaf.scale], [2, I32, leaf.precision]]]]]]
+    case 'time':
+    case 'timestamp': {
+      const unit = leaf.unit === 'millis' ? 1 : leaf.unit === 'micros' ? 2 : 3
+      const logicalId = leaf.type === 'time' ? 7 : 8
+      const fields = /** @type {Field[]} */ ([])
+      if (unit !== 3) fields.push([6, I32, (leaf.type === 'time' ? 6 : 8) + unit])
+      fields.push([10, STRUCT, [[logicalId, STRUCT, [
+        [1, leaf.isAdjustedToUTC ? TRUE : FALSE, leaf.isAdjustedToUTC],
+        [2, STRUCT, [[unit, STRUCT, []]]],
+      ]]]])
+      return fields
+    }
+    default: return []
+  }
+}
+
 /** @param {Leaf[]} leaves @param {Group[]} rowGroups @param {bigint} count */
 export function footer(leaves, rowGroups, count) {
   /** @type {Field[][]} */
@@ -113,7 +150,7 @@ export function footer(leaves, rowGroups, count) {
     const field = [[1, I32, leaf.physical]]
     if (leaf.physical === 7) field.push([2, I32, leaf.length])
     field.push([3, I32, leaf.nullable ? 1 : 0], [4, BINARY, leaf.name])
-    if (leaf.utf8) field.push([6, I32, 0], [10, STRUCT, [[1, STRUCT, []]]])
+    field.push(...annotations(leaf))
     schema.push(field)
   }
   const groups = rowGroups.map(({ chunks, count }) => {
