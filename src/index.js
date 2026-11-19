@@ -420,12 +420,15 @@ async function* samples(input) {
   for await (const batch of batches) {
     if (!batch?.columns) throw new TypeError('Expected a column batch')
     const names = Object.keys(batch.columns)
-    if (batch.rowCount) batchNames ??= names
-    const vectors = readVectors(batch, batch.rowCount ? (batchNames ?? names) : names)
-    const order = batchNames ?? names
-    const types = Object.fromEntries(order.map((name, i) => [name, vectorType(vectors[i].values)]))
+    if (!batch.rowCount) {
+      readVectors(batch, names)
+      continue
+    }
+    batchNames ??= names
+    const vectors = readVectors(batch, batchNames)
+    const types = Object.fromEntries(batchNames.map((name, i) => [name, vectorType(vectors[i].values)]))
     for (let index = 0; index < batch.rowCount; index++) {
-      const row = Object.fromEntries(order.map((name, i) => [name, vectorValue(vectors[i], index)]))
+      const row = Object.fromEntries(batchNames.map((name, i) => [name, vectorValue(vectors[i], index)]))
       yield { row, types }
     }
   }

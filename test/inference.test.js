@@ -68,6 +68,7 @@ test('infers streamed column widths after empty leading batches', async () => {
   async function* columns() {
     yield { rowCount: 0, columns: { id: new BigUint64Array(0) } }
     yield { rowCount: 2, columns: { id: new BigUint64Array([0n, (1n << 64n) - 1n]) } }
+    yield { rowCount: 0, columns: {} }
   }
   const file = (await writeParquetBuffer({ columns: columns(), rowGroupRows: 1 })).buffer
   assert.deepEqual((await parquetReadObjects({ file })).map(row => row.id), [0n, (1n << 64n) - 1n])
