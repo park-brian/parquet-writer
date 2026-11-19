@@ -55,7 +55,7 @@ function writeStruct(out, fields) {
 }
 
 /** @param {Field[]} fields */
-function encode(fields) {
+export function encodeCompact(fields) {
   const out = new Bytes()
   writeStruct(out, fields)
   return out.finish()
@@ -64,7 +64,7 @@ function encode(fields) {
 /** @param {number} size @param {number} count */
 export function pageHeader(size, count) {
   if (size > 0x7fffffff || count > 0x7fffffff) throw new RangeError('Page exceeds Parquet i32 limit')
-  return encode([
+  return encodeCompact([
     [1, I32, 0], [2, I32, size], [3, I32, size],
     [5, STRUCT, [[1, I32, count], [2, I32, 0], [3, I32, 3], [4, I32, 3]]],
   ])
@@ -92,7 +92,7 @@ export function footer(leaves, chunks, count) {
   ])
   const size = chunks.reduce((sum, chunk) => sum + chunk.size, 0n)
   const groups = count ? [[[1, LIST, [STRUCT, columns]], [2, I64, size], [3, I64, count]]] : []
-  return encode([
+  return encodeCompact([
     [1, I32, 1], [2, LIST, [STRUCT, schema]], [3, I64, count],
     [4, LIST, [STRUCT, groups]], [6, BINARY, 'parquet-writer version 0.0.1'],
   ])

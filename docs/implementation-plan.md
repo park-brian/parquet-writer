@@ -1,7 +1,6 @@
 # Implementation roadmap
 
-The first write path is in place. Slice 1 tracks its remaining validation.
-Slices 2–7 describe the remaining implementation.
+Slice 1 is complete. Slices 2–7 describe the remaining implementation.
 
 Use [the design](design.md) for normative API and wire behavior and [the reference
 index](README.md) for source locations and revisions. Implement in this order.
@@ -75,7 +74,7 @@ schemas, row counts, and offsets. The pinned CBIIT Java CLI runs `meta`, `footer
 and `pages` on the populated fixture and checks zero rows in the empty footer.
 Use `meta` for the physical schema because `schema` displays an Avro projection.
 Compare selected metadata fields rather than command output formatting.
-Compact Protocol booleans, field deltas,
+Compact Protocol field deltas,
 list lengths around 14/15, nested structs, and signed/unsigned varint boundaries
 have golden vectors. The nullable/nested design examples become executable cases
 in their later slices. Root import works in a browser without Node shims.
@@ -118,6 +117,7 @@ Depends on slice 2.
   dictionary pages, and page-local index generation. Fall back to PLAIN for the
   whole chunk when capped or ineffective; reset at row-group boundaries.
 - Compute per-page statistics, merge safe chunk bounds, and discard page state.
+  Add Compact Protocol boolean and binary field vectors when statistics use them.
   Serialize modern bounds, null counts, column orders, and actual encoding lists.
   Check that all-null pages preserve bounds from other pages while unsafe non-null
   pages suppress chunk bounds. Inspect a selected dictionary with the Java CLI.
