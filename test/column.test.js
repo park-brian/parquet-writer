@@ -1,13 +1,14 @@
+import { compileSchema } from '../src/schema.js'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { parquetMetadata, parquetReadObjects } from 'hyparquet'
 import { writeParquetBuffer } from '../src/index.js'
 import { dictionary, encodeBounds, mergeBounds, pageBounds } from '../src/column.js'
-import { compile } from '../src/pages.js'
+
 import { snappy } from '../src/snappy.js'
 
 test('dictionary widths follow the highest present ID', () => {
-  const [leaf] = compile({ fields: [{ name: 'id', type: 'int32' }] })
+  const [leaf] = compileSchema({ fields: [{ name: 'id', type: 'int32' }] }).leaves
   for (const [count, width] of [[1, 0], [2, 1], [255, 8], [256, 8], [257, 9]]) {
     const values = Array.from({ length: count }, (_, id) => id)
     const candidate = dictionary(leaf, values, 4 * count)
@@ -18,7 +19,7 @@ test('dictionary widths follow the highest present ID', () => {
 })
 
 test('binary dictionary resolves hash collisions by comparing bytes', () => {
-  const [leaf] = compile({ fields: [{ name: 'label', type: 'binary' }] })
+  const [leaf] = compileSchema({ fields: [{ name: 'label', type: 'binary' }] }).leaves
   const a = Uint8Array.of(33, 18, 201, 71, 204, 132, 123, 227)
   const b = Uint8Array.of(207, 109, 179, 156, 38, 246, 42, 176)
   const candidate = dictionary(leaf, [a, b, a.slice(), b.slice()], 24)
@@ -27,7 +28,7 @@ test('binary dictionary resolves hash collisions by comparing bytes', () => {
 })
 
 test('comparison preserves zero sign and handles unsafe pages separately from nulls', () => {
-  const [leaf] = compile({ fields: [{ name: 'x', type: 'double' }] })
+  const [leaf] = compileSchema({ fields: [{ name: 'x', type: 'double' }] }).leaves
   const bounds = pageBounds([Infinity, -Infinity, null], 4096)
   mergeBounds(bounds, pageBounds([null, null], 4096))
   const stats = encodeBounds(leaf, bounds)
@@ -42,7 +43,7 @@ test('comparison preserves zero sign and handles unsafe pages separately from nu
 })
 
 test('string bounds follow unsigned UTF-8 bytes and omit oversized extremes', () => {
-  const [leaf] = compile({ fields: [{ name: 'label', type: 'string' }] })
+  const [leaf] = compileSchema({ fields: [{ name: 'label', type: 'string' }] }).leaves
   const text = new TextEncoder()
   const values = [text.encode('𐀀'), text.encode('\ue000')]
   const stats = encodeBounds(leaf, pageBounds(values, 4))

@@ -151,10 +151,10 @@ between schema serialization and the encoder. Path identity is an array, not a
 dot-joined string (field names may contain dots).
 
 Flat columns go directly to page planning using index ranges/typed-array views.
-Rows become bounded column buffers, not whole-dataset transpositions. For nested
-columns, prepare one top-level subtree at a time, distributing each traversal to
-its leaves. Release leaf level/value buffers after encoding the subtree. Avoid
-repeated full-tree traversal per leaf and per-value object triplets.
+Rows become bounded column buffers. Traverse each nested root value once and
+distribute its slots to the leaves during ingestion. Keep slot values and levels
+in parallel arrays. The group byte estimate includes the expanded slots, and
+page output releases group data once all its chunks have been written.
 
 Every leaf yields packed present values, definition levels, repetition levels,
 and row boundaries. Null placeholders contribute levels and num_values but no

@@ -2,10 +2,12 @@ import { Bytes, encodeText } from './binary.js'
 
 /** @typedef {'boolean' | 'int8' | 'int16' | 'int32' | 'int64' | 'uint8' | 'uint16' | 'uint32' | 'uint64' | 'float' | 'double' | 'string' | 'binary' | 'fixedBinary' | 'date' | 'time' | 'timestamp' | 'decimal' | 'uuid'} Type */
 /** @typedef {'millis' | 'micros' | 'nanos'} Unit */
-/** @typedef {{name: string, type: Type, nullable?: boolean, length?: number, unit?: Unit, isAdjustedToUTC?: boolean, precision?: number, scale?: number}} Field */
+/** @typedef {{type: Type, nullable?: boolean, length?: number, unit?: Unit, isAdjustedToUTC?: boolean, precision?: number, scale?: number}} Primitive */
+/** @typedef {Primitive | {type: 'struct', nullable?: boolean, fields: Field[]} | {type: 'list', nullable?: boolean, element: FieldType} | {type: 'map', nullable?: boolean, key: Primitive, value: FieldType}} FieldType */
+/** @typedef {{name: string} & FieldType} Field */
 /** @typedef {{fields: Field[]}} Schema */
 /** @typedef {number | bigint | boolean | Uint8Array | null} Value */
-/** @typedef {Field & {physical: number, width: number, integerBits?: number, signed?: boolean}} Leaf */
+/** @typedef {{name: string} & Primitive & {physical: number, width: number, integerBits?: number, signed?: boolean, path?: string[], definitionWidth?: number, repetitionWidth?: number}} Leaf */
 
 const types = { boolean: 0, int8: 1, int16: 1, int32: 1, int64: 2,
   uint8: 1, uint16: 1, uint32: 1, uint64: 2, float: 4, double: 5,
@@ -13,22 +15,10 @@ const types = { boolean: 0, int8: 1, int16: 1, int32: 1, int64: 2,
 const widths = [1, 4, 8, 0, 4, 8, 0, 0]
 const day = { millis: 86_400_000, micros: 86_400_000_000n, nanos: 86_400_000_000_000n }
 
-/** @param {Schema} schema @returns {Leaf[]} */
-export function compile(schema) {
-  if (!Array.isArray(schema?.fields) || !schema.fields.length) throw new TypeError('Expected a nonempty schema')
-  const names = new Set()
-  return schema.fields.map(field => {
-    const { name, type } = field
-    if (typeof name !== 'string' || !name || names.has(name)) throw new TypeError('Expected unique field names')
-    if (!Object.hasOwn(types, type)) throw new TypeError('Unsupported field type: ' + type)
-    names.add(name)
-    return compileLeaf(field)
-  })
-}
-
-/** @param {Field} field @returns {Leaf} */
-function compileLeaf(field) {
+/** @param {{name: string} & Primitive} field @returns {Leaf} */
+export function compileLeaf(field) {
   const { type, nullable = true, unit, isAdjustedToUTC = type === 'timestamp', precision, scale = 0 } = field
+  if (!Object.hasOwn(types, type)) throw new TypeError('Unsupported field type: ' + type)
   let physical = types[type]
   let length = type === 'fixedBinary' ? field.length : undefined
   const integer = /^(u?)int(8|16|32|64)$/.exec(type)

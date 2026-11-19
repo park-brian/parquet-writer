@@ -1,8 +1,9 @@
+import { compileSchema } from '../src/schema.js'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { parquetMetadata, parquetReadObjects } from 'hyparquet'
 import { ParquetWriter, writeParquet, writeParquetBuffer } from '../src/index.js'
-import { compile, dataPage } from '../src/pages.js'
+import { dataPage } from '../src/pages.js'
 import { webSink } from '../src/web.js'
 import { streamSink } from '../src/node.js'
 import { Writable } from 'node:stream'
@@ -10,7 +11,7 @@ import { Writable } from 'node:stream'
 const schema = { fields: [{ name: 'score', type: 'int32' }] }
 
 test('writes nullable and repeated V1 level streams in wire order', () => {
-  const [leaf] = compile(schema)
+  const [leaf] = compileSchema(schema).leaves
   const nullable = dataPage(leaf, [7, 9], [1, 0, 1], 1)
   assert.equal(Buffer.from(nullable).toString('hex'), '0200000003050700000009000000')
   const repeated = dataPage(leaf, [1, 2], [0, 1, 3, 2, 3], 2, [0, 0, 0, 1, 1], 1)

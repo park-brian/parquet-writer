@@ -1,6 +1,7 @@
 import { Bytes } from './binary.js'
 import { dictionaryHeader, footer, pageHeader } from './metadata.js'
-import { compile, dataPage, hybrid, normalize, plain, valueSize } from './pages.js'
+import { dataPage, hybrid, normalize, plain, valueSize } from './pages.js'
+import { compileSchema, shred } from './schema.js'
 import { dictionary, encodeBounds, mergeBounds, pageBounds } from './column.js'
 import { snappy } from './snappy.js'
 
@@ -9,6 +10,7 @@ const codecIds = { UNCOMPRESSED: 0, SNAPPY: 1, GZIP: 2, LZO: 3, BROTLI: 4, LZ4: 
 
 /** @typedef {import('./pages.js').Schema} Schema */
 /** @typedef {import('./pages.js').Value} Value */
+/** @typedef {{values: Value[], definitions: number[], repetitions: number[], rowEnds: number[]}} Column */
 /** @typedef {Record<string, unknown>} Row */
 /** @typedef {ArrayLike<unknown>} Vector */
 /** @typedef {{ rowCount: number, columns: Record<string, Vector | { values: Vector, validity?: Uint8Array }> }} Batch */
@@ -20,7 +22,7 @@ const codecIds = { UNCOMPRESSED: 0, SNAPPY: 1, GZIP: 2, LZO: 3, BROTLI: 4, LZ4: 
 /** @typedef {{ write(bytes: Uint8Array): void | Promise<void>, close?(): void | Promise<void>, abort?(reason: unknown): void | Promise<void> }} Sink */
 
 export class ParquetWriter {
-  #leaves
+  #schema
   #sink
   #signal
   #rowLimit
@@ -30,7 +32,7 @@ export class ParquetWriter {
   #codec
   #dictionaryLimit
   #statisticsLimit
-  /** @type {Value[][]} */
+  /** @type {Column[]} */
   #columns
   #rows = 0
   #estimatedBytes = 0
@@ -64,8 +66,8 @@ export class ParquetWriter {
     this.#codec = codecIds[codec]
     this.#dictionaryLimit = dictionary === false ? 0 : dictionaryByteLimit
     this.#statisticsLimit = statistics ? statisticsMaxBytes : 0
-    this.#leaves = compile(schema)
-    this.#columns = this.#leaves.map(() => [])
+    this.#schema = compileSchema(schema)
+    this.#columns = this.#schema.leaves.map(() => ({ values: [], definitions: [], repetitions: [], rowEnds: [] }))
     this.#sink = sink
     this.#signal = signal
     this.#rowLimit = rowGroupRows
@@ -115,14 +117,14 @@ export class ParquetWriter {
   /** @param {Source<Row>} rows */
   writeRows(rows) {
     return this.#run(async () => {
-      const names = new Set(this.#leaves.map(leaf => leaf.name))
+      const names = new Set(this.#schema.roots.map(root => root.field.name))
       for await (const row of rows) {
         this.#check()
         if (!row || typeof row !== 'object' || Array.isArray(row)) throw new TypeError('Expected a row object')
         for (const name of Object.keys(row)) {
           if (!names.has(name)) throw new TypeError(`Unknown field ${name} in row ${this.#rowCount + BigInt(this.#rows)}`)
         }
-        this.#append(leaf => Object.hasOwn(row, leaf.name) ? row[leaf.name] : undefined)
+        this.#append(name => Object.hasOwn(row, name) ? row[name] : undefined)
         if (this.#groupReady()) await this.#flush()
       }
     })
@@ -133,8 +135,8 @@ export class ParquetWriter {
     return this.#run(async () => {
       const { rowCount, columns } = batch
       if (!Number.isSafeInteger(rowCount) || rowCount < 0) throw new RangeError('Invalid row count')
-      if (!columns || Object.keys(columns).length !== this.#leaves.length) throw new TypeError('Column names must match schema')
-      const vectors = this.#leaves.map(({ name }) => {
+      if (!columns || Object.keys(columns).length !== this.#schema.roots.length) throw new TypeError('Column names must match schema')
+      const vectors = this.#schema.roots.map(({ field: { name } }) => {
         const column = Object.hasOwn(columns, name) ? columns[name] : undefined
         const wrapped = column && Object.hasOwn(column, 'values')
         const descriptor = /** @type {{values: Vector, validity?: Uint8Array}} */ (column)
@@ -159,12 +161,33 @@ export class ParquetWriter {
     })
   }
 
-  /** @param {(leaf: import('./pages.js').Leaf, index: number) => unknown} read */
+  /** @param {(name: string, index: number) => unknown} read */
   #append(read) {
-    for (const [index, leaf] of this.#leaves.entries()) {
-      const value = normalize(leaf, read(leaf, index))
+    const { roots, leaves } = this.#schema
+    /** @type {import('./schema.js').Emit} */
+    const emit = (index, value, def, rep) => {
+      const leaf = leaves[index]
+      const column = this.#columns[index]
       this.#estimatedBytes += valueSize(leaf, value)
-      this.#columns[index].push(value)
+      column.values.push(value)
+      if (leaf.definitionWidth) column.definitions.push(def)
+      if (leaf.repetitionWidth) column.repetitions.push(rep)
+    }
+    for (const [index, root] of roots.entries()) {
+      try {
+        const input = read(root.field.name, index)
+        if (root.leaf) {
+          const value = normalize(root.leaf, input)
+          emit(root.firstLeaf, value, value === null ? 0 : root.definition, 0)
+        } else {
+          shred(root, input, 0, 0, emit, new Set())
+          for (let i = root.firstLeaf; i < root.endLeaf; i++) {
+            if (leaves[i].repetitionWidth) this.#columns[i].rowEnds.push(this.#columns[i].values.length)
+          }
+        }
+      } catch (cause) {
+        throw new TypeError(`Invalid row ${this.#rowCount + BigInt(this.#rows)}, field ${root.field.name}: ${String(cause)}`, { cause })
+      }
     }
     this.#rows++
   }
@@ -181,22 +204,28 @@ export class ParquetWriter {
     if (!this.#rows) return
     if (!this.#offset) await this.#write(magic.slice())
     const chunks = []
-    for (const [index, leaf] of this.#leaves.entries()) {
+    for (const [index, leaf] of this.#schema.leaves.entries()) {
       chunks.push(await this.#writeColumn(leaf, this.#columns[index]))
     }
     this.#groups.push({ chunks, count: this.#rows })
     this.#rowCount += BigInt(this.#rows)
-    for (const column of this.#columns) column.length = 0
+    for (const { values, definitions, repetitions, rowEnds } of this.#columns) {
+      values.length = definitions.length = repetitions.length = rowEnds.length = 0
+    }
     this.#rows = this.#estimatedBytes = 0
   }
 
-  /** @param {import('./pages.js').Leaf} leaf @param {Value[]} values */
-  async #writeColumn(leaf, values) {
+  /** @param {import('./pages.js').Leaf} leaf @param {Column} column */
+  async #writeColumn(leaf, { values, definitions, repetitions, rowEnds }) {
     const ranges = []
+    let row = 0
     for (let start = 0; start < values.length;) {
       let end = start
       let estimate = 0
-      do { estimate += valueSize(leaf, values[end++]) }
+      do {
+        const rowEnd = leaf.repetitionWidth ? rowEnds[row++] : end + 1
+        while (end < rowEnd) estimate += valueSize(leaf, values[end++])
+      }
       while (end < values.length && estimate < this.#pageTarget)
       let present = 0
       for (let i = start; i < end; i++) if (values[i] !== null) present++
@@ -236,9 +265,9 @@ export class ParquetWriter {
     const total = { nulls: 0n, nans: 0n, unsafe: false }
     for (const [index, { start, end, present }] of ranges.entries()) {
       const page = values.slice(start, end)
-      const definitions = leaf.nullable ? page.map(value => value === null ? 0 : 1) : []
       const encoded = present ? indexes?.[index] : undefined
-      const raw = dataPage(leaf, page, definitions, leaf.nullable ? 1 : 0, [], 0, encoded)
+      const raw = dataPage(leaf, page, definitions.slice(start, end), leaf.definitionWidth,
+        repetitions.slice(start, end), leaf.repetitionWidth, encoded)
       const packed = await this.#pack(raw)
       const bounds = this.#statisticsLimit ? pageBounds(page, this.#statisticsLimit) : undefined
       if (bounds) mergeBounds(total, bounds)
@@ -249,7 +278,7 @@ export class ParquetWriter {
       await this.#write(packed)
     }
     const stats = this.#statisticsLimit ? encodeBounds(leaf, total) : undefined
-    return { leaf, offset, size: this.#offset - chunkStart, rawSize, codec: this.#codec, dictionaryOffset, stats }
+    return { leaf, count: values.length, offset, size: this.#offset - chunkStart, rawSize, codec: this.#codec, dictionaryOffset, stats }
   }
 
   /** @param {Uint8Array} bytes */
@@ -266,7 +295,7 @@ export class ParquetWriter {
     this.#closing = this.#run(async () => {
       await this.#flush()
       if (!this.#offset) await this.#write(magic.slice())
-      const metadata = footer(this.#leaves, this.#groups, this.#rowCount)
+      const metadata = footer(this.#schema, this.#groups, this.#rowCount)
       if (metadata.length > 0xffffffff) throw new RangeError('Footer exceeds Parquet uint32 limit')
       const trailer = new Bytes()
       trailer.i32(metadata.length)

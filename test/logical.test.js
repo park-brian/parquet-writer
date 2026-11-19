@@ -1,9 +1,10 @@
+import { compileSchema } from '../src/schema.js'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { parquetMetadata, parquetReadObjects } from 'hyparquet'
 import { writeParquetBuffer } from '../src/index.js'
 import { Bytes } from '../src/binary.js'
-import { compile, normalize, plain } from '../src/pages.js'
+import { normalize, plain } from '../src/pages.js'
 import { encodeBounds, pageBounds } from '../src/column.js'
 
 test('preserves unsigned integer bits and decimal numeric order', async () => {
@@ -18,7 +19,7 @@ test('preserves unsigned integer bits and decimal numeric order', async () => {
   assert.equal(second.id, 0n)
   const metadata = parquetMetadata(file)
   assert.equal(metadata.schema[2].type_length, 16)
-  const [, leaf] = compile(schema)
+  const [, leaf] = compileSchema(schema).leaves
   const bounds = encodeBounds(leaf, pageBounds(rows.map(row => row.amount), 4096))
   assert.equal(Buffer.from(bounds.min).toString('hex'), 'ff'.repeat(16))
   const out = new Bytes()
@@ -40,7 +41,7 @@ test('rejects values outside their declared analytical type', () => {
     [{ type: 'uuid' }, 'not a uuid'],
   ]
   for (const [field, value] of examples) {
-    const [leaf] = compile({ fields: [{ name: 'v', ...field }] })
+    const [leaf] = compileSchema({ fields: [{ name: 'v', ...field }] }).leaves
     assert.throws(() => normalize(leaf, value), /Invalid/)
   }
 })

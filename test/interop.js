@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { writeParquetBuffer } from '../src/index.js'
 import { schema, rows } from './fixture.js'
+import { nestedRows, nestedSchema } from './nested-fixture.js'
 
 function run(command, args, options = {}) {
   try {
@@ -55,6 +56,23 @@ assert.deepEqual(JSON.parse(logical), [{
   key: '00112233-4455-6677-8899-aabbccddeeff',
 }])
 console.log('logical: DuckDB and PyArrow preserved exact values')
+
+const nestedFile = join(directory, 'nested.parquet').replaceAll('\\', '/')
+writeFileSync(nestedFile, await writeParquetBuffer({
+  schema: nestedSchema, rows: nestedRows, rowGroupRows: 2, pageByteTarget: 2,
+}))
+const nestedExpected = nestedRows.map(row => ({
+  ...row, attributes: row.attributes === null ? null : [...row.attributes],
+}))
+run(process.env.PYTHON || 'python', ['test/inspect_nested.py', nestedFile], {
+  input: JSON.stringify(nestedExpected),
+})
+const nested = run(process.env.DUCKDB || 'duckdb', ['-json', '-c',
+  `SELECT id, numbers, matrix, record, map_entries(attributes) AS attributes FROM read_parquet('${nestedFile}') ORDER BY id`])
+assert.deepEqual(JSON.parse(nested), nestedExpected.map(row => ({
+  ...row, attributes: row.attributes?.map(([key, value]) => ({ key, value })) ?? null,
+})))
+console.log('nested: DuckDB and PyArrow preserved null, empty, and repeated values')
 
 async function check(name, schema, data, options = {}, inspectDictionary = false) {
   const filename = join(directory, name + '.parquet').replaceAll('\\', '/')

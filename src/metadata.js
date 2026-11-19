@@ -105,7 +105,7 @@ function checkPage(...sizes) {
 }
 
 /** @typedef {import('./pages.js').Leaf} Leaf */
-/** @typedef {{ leaf: Leaf, offset: bigint, size: bigint, rawSize: bigint, codec: number, dictionaryOffset?: bigint, stats?: Statistics }} Chunk */
+/** @typedef {{ leaf: Leaf, count: number, offset: bigint, size: bigint, rawSize: bigint, codec: number, dictionaryOffset?: bigint, stats?: Statistics }} Chunk */
 /** @typedef {{ chunks: Chunk[], count: number }} Group */
 
 /** @param {Leaf} leaf @returns {Field[]} */
@@ -141,25 +141,28 @@ function annotations(leaf) {
   }
 }
 
-/** @param {Leaf[]} leaves @param {Group[]} rowGroups @param {bigint} count */
-export function footer(leaves, rowGroups, count) {
-  /** @type {Field[][]} */
-  const schema = [[[4, BINARY, 'schema'], [5, I32, leaves.length]]]
-  for (const leaf of leaves) {
+/** @param {ReturnType<typeof import('./schema.js').compileSchema>} compiled @param {Group[]} rowGroups @param {bigint} count */
+export function footer({ leaves, elements }, rowGroups, count) {
+  const schema = elements.map(({ name, repetition, leaf, children, logical }, index) => {
     /** @type {Field[]} */
-    const field = [[1, I32, leaf.physical]]
-    if (leaf.physical === 7) field.push([2, I32, leaf.length])
-    field.push([3, I32, leaf.nullable ? 1 : 0], [4, BINARY, leaf.name])
-    field.push(...annotations(leaf))
-    schema.push(field)
-  }
+    const field = []
+    if (leaf) field.push([1, I32, leaf.physical])
+    if (leaf?.physical === 7) field.push([2, I32, leaf.length])
+    if (index) field.push([3, I32, repetition])
+    field.push([4, BINARY, name])
+    if (children !== undefined) field.push([5, I32, children])
+    if (leaf) field.push(...annotations(leaf))
+    if (logical) field.push([6, I32, logical === 'list' ? 3 : 1],
+      [10, STRUCT, [[logical === 'list' ? 3 : 2, STRUCT, []]]])
+    return field
+  })
   const groups = rowGroups.map(({ chunks, count }) => {
-    const columns = chunks.map(({ leaf, offset, size, rawSize, codec, dictionaryOffset, stats }) => {
-      const encodings = leaf.nullable ? [0, 3] : [0]
+    const columns = chunks.map(({ leaf, offset, size, rawSize, codec, dictionaryOffset, stats, count }) => {
+      const encodings = leaf.definitionWidth || leaf.repetitionWidth ? [0, 3] : [0]
       if (dictionaryOffset !== undefined) encodings.push(8)
       const metadata = /** @type {Field[]} */ ([
         [1, I32, leaf.physical], [2, LIST, [I32, encodings]],
-        [3, LIST, [BINARY, [leaf.name]]], [4, I32, codec], [5, I64, count],
+        [3, LIST, [BINARY, leaf.path]], [4, I32, codec], [5, I64, count],
         [6, I64, rawSize], [7, I64, size], [9, I64, offset],
       ])
       if (dictionaryOffset !== undefined) metadata.push([11, I64, dictionaryOffset])
