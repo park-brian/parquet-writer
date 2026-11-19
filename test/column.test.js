@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { parquetMetadata, parquetReadObjects } from 'hyparquet'
 import { writeParquetBuffer } from '../src/index.js'
-import { dictionary, encodeBounds, mergeBounds, pageBounds } from '../src/column.js'
+import { chooseDictionary, dictionary, encodeBounds, mergeBounds, pageBounds } from '../src/column.js'
 
 import { snappy } from '../src/snappy.js'
 
@@ -25,6 +25,16 @@ test('binary dictionary resolves hash collisions by comparing bytes', () => {
   const candidate = dictionary(leaf, [a, b, a.slice(), b.slice()], 24)
   assert.deepEqual(candidate.entries, [a, b])
   assert.deepEqual(candidate.ids, [0, 1, 0, 1])
+})
+
+test('all-null pages do not count against dictionary savings', () => {
+  const [leaf] = compileSchema({ fields: [{ name: 'value', type: 'int32' }] }).leaves
+  const missing = Array(100).fill(null)
+  const values = [...missing, ...Array(10).fill(7)]
+  const pages = [...missing.map(() => ({ present: 0 })), { present: 10 }]
+  const chosen = chooseDictionary(leaf, values, pages, 4096)
+  assert.equal(chosen.count, 1)
+  assert.equal(chosen.indexes.filter(Boolean).length, 1)
 })
 
 test('comparison preserves zero sign and handles unsafe pages separately from nulls', () => {

@@ -1,12 +1,13 @@
-import { Bytes } from './binary.js'
 import { dictionaryHeader, footer, magic, pageHeader, trailer } from './metadata.js'
-import { dataPage, directVector, hybrid, normalize, plain, valueSize } from './pages.js'
+import { dataPage, directVector, normalize, valueSize } from './pages.js'
 import { compileSchema, shred } from './schema.js'
-import { dictionary, encodeBounds, mergeBounds, pageBounds } from './column.js'
+import { chooseDictionary, encodeBounds, mergeBounds, pageBounds } from './column.js'
 import { snappy } from './snappy.js'
 import { schemaInference, vectorType } from './infer.js'
 
 const codecIds = { UNCOMPRESSED: 0, SNAPPY: 1, GZIP: 2, LZO: 3, BROTLI: 4, LZ4: 5, ZSTD: 6, LZ4_RAW: 7 }
+const defaultGroupRows = 65_536
+const defaultGroupBytes = 64 * 1024 * 1024
 
 /** @typedef {import('./pages.js').Schema} Schema */
 /** @typedef {import('./pages.js').Value} Value */
@@ -57,7 +58,7 @@ export class ParquetWriter {
   #finished = false
 
   /** @param {Options & { sink: Sink }} options */
-  constructor({ schema, sink, signal, rowGroupRows = 65_536, rowGroupByteTarget = 64 * 1024 * 1024, pageByteTarget = 1024 * 1024,
+  constructor({ schema, sink, signal, rowGroupRows = defaultGroupRows, rowGroupByteTarget = defaultGroupBytes, pageByteTarget = 1024 * 1024,
     codec = 'SNAPPY', codecs, dictionary = 'auto', dictionaryByteLimit = 1024 * 1024, statistics = true, statisticsMaxBytes = 4096,
     metadata = [], createdBy = 'parquet-writer version 0.0.1' }) {
     for (const size of [rowGroupRows, rowGroupByteTarget, pageByteTarget, dictionaryByteLimit, statisticsMaxBytes]) {
@@ -103,7 +104,7 @@ export class ParquetWriter {
         this.#check()
         return await work()
       } catch (error) {
-        this.#finished = true
+        this.#finish()
         await this.#abortSink(error)
         throw error
       } finally {
@@ -167,9 +168,7 @@ export class ParquetWriter {
       }
       for (; row < rowCount; row++) {
         this.#check()
-        this.#append((_, index) => {
-          return vectorValue(vectors[index], row)
-        })
+        this.#append((_, index) => vectorValue(vectors[index], row))
         if (this.#groupReady()) await this.#flush()
       }
     })
@@ -217,11 +216,21 @@ export class ParquetWriter {
   async #flush() {
     if (!this.#rows) return
     await this.#writeGroup(this.#columns, this.#rows)
+    this.#clearGroup()
+  }
+
+  #clearGroup() {
     for (const { values, definitions, repetitions, rowEnds } of this.#columns) {
       values.length = definitions.length = repetitions.length = rowEnds.length = 0
     }
     this.#strings.clear()
     this.#rows = this.#estimatedBytes = 0
+  }
+
+  #finish() {
+    this.#finished = true
+    this.#clearGroup()
+    this.#groups.length = 0
   }
 
   /** @param {PageColumn[]} columns @param {number} count */
@@ -242,13 +251,16 @@ export class ParquetWriter {
     for (let start = 0; start < values.length;) {
       let end = start
       let estimate = 0
+      let present = 0
       do {
         const rowEnd = leaf.repetitionWidth ? rowEnds[row++] : end + 1
-        while (end < rowEnd) estimate += valueSize(leaf, values[end++])
+        while (end < rowEnd) {
+          const value = values[end++]
+          estimate += valueSize(leaf, value)
+          if (value !== null) present++
+        }
       }
       while (end < values.length && estimate < this.#pageTarget)
-      let present = 0
-      for (let i = start; i < end; i++) if (values[i] !== null) present++
       ranges.push({ start, end, present })
       start = end
     }
@@ -256,36 +268,21 @@ export class ParquetWriter {
     const chunkStart = this.#offset
     let rawSize = 0n
     let dictionaryOffset
-    let indexes
-    const candidate = this.#dictionaryLimit ? dictionary(leaf, values, this.#dictionaryLimit) : undefined
-    if (candidate) {
-      let cursor = 0
-      const encoded = ranges.map(({ present }) => {
-        const out = new Bytes()
-        out.byte(candidate.width)
-        hybrid(out, candidate.ids.slice(cursor, cursor + present), candidate.width)
-        cursor += present
-        return out.finish()
-      })
-      const bytes = new Bytes()
-      plain(bytes, leaf, candidate.entries)
-      const raw = bytes.finish()
-      const addedBytes = dictionaryHeader(raw.length, raw.length, candidate.entries.length).length
-      if (candidate.dictionarySize + addedBytes + encoded.reduce((sum, item) => sum + item.length, 0) < candidate.plainSize) {
-        indexes = encoded
-        dictionaryOffset = this.#offset
-        const packed = await this.#pack(raw)
-        const header = dictionaryHeader(raw.length, packed.length, candidate.entries.length)
-        rawSize += BigInt(header.length + raw.length)
-        await this.#write(header)
-        await this.#write(packed)
-      }
+    const dictionary = chooseDictionary(leaf, values, ranges, this.#dictionaryLimit)
+    if (dictionary) {
+      dictionaryOffset = this.#offset
+      const raw = dictionary.payload
+      const packed = await this.#pack(raw)
+      const header = dictionaryHeader(raw.length, packed.length, dictionary.count)
+      rawSize += BigInt(header.length + raw.length)
+      await this.#write(header)
+      await this.#write(packed)
     }
     const offset = this.#offset
     const total = { nulls: 0n, nans: 0n, unsafe: false }
-    for (const [index, { start, end, present }] of ranges.entries()) {
+    for (const [index, { start, end }] of ranges.entries()) {
       const page = Array.isArray(values) ? values.slice(start, end) : values.subarray(start, end)
-      const encoded = present ? indexes?.[index] : undefined
+      const encoded = dictionary?.indexes[index]
       const raw = dataPage(leaf, page, definitions.slice(start, end), leaf.definitionWidth,
         repetitions.slice(start, end), leaf.repetitionWidth, encoded)
       const packed = await this.#pack(raw)
@@ -321,7 +318,7 @@ export class ParquetWriter {
       await this.#write(end)
       await this.#sink.close?.()
       this.#check()
-      this.#finished = true
+      this.#finish()
       return { rowCount: this.#rowCount, byteLength: this.#offset }
     })
     return this.#closing
@@ -335,7 +332,7 @@ export class ParquetWriter {
     this.#aborting = (async () => {
       await this.#pending?.catch(() => {})
       if (this.#finished) return
-      this.#finished = true
+      this.#finish()
       await this.#abortSink(reason)
     })()
     return this.#aborting
@@ -347,7 +344,7 @@ function readVectors(batch, names) {
   const { rowCount, columns } = batch
   if (!Number.isSafeInteger(rowCount) || rowCount < 0) throw new RangeError('Invalid row count')
   if (!columns || Object.keys(columns).length !== names.length) throw new TypeError('Column names must match schema')
-  const vectors = names.map(name => {
+  return names.map(name => {
     const column = Object.hasOwn(columns, name) ? columns[name] : undefined
     const wrapped = column && Object.hasOwn(column, 'values')
     const descriptor = /** @type {{values: Vector, validity?: Uint8Array}} */ (column)
@@ -361,12 +358,12 @@ function readVectors(batch, names) {
     }
     return { values, validity }
   })
-  return vectors
 }
 
 /** @param {{values: Vector, validity?: Uint8Array}} vector @param {number} row */
 function vectorValue({ values, validity }, row) {
-  return !validity || validity[Math.floor(row / 8)] & (1 << (row & 7)) ? values[row] : null
+  if (validity && !(validity[Math.floor(row / 8)] & (1 << (row & 7)))) return null
+  return values[row]
 }
 
 /** @param {Input & { sink: Sink }} input */
@@ -394,8 +391,8 @@ export async function writeParquet(input) {
         bytes += inference.observe(item.value.row, item.value.types)
         if (!inMemory) {
           prefix.push(structuredClone(item.value.row))
-          if (prefix.length >= (input.rowGroupRows ?? 65_536) ||
-              bytes >= (input.rowGroupByteTarget ?? 64 * 1024 * 1024)) break
+          if (prefix.length >= (input.rowGroupRows ?? defaultGroupRows) ||
+              bytes >= (input.rowGroupByteTarget ?? defaultGroupBytes)) break
         }
       }
       schema = inference.finish()

@@ -1,5 +1,6 @@
 import { Bytes } from './binary.js'
-import { plain } from './pages.js'
+import { hybrid, plain } from './pages.js'
+import { dictionaryHeader } from './metadata.js'
 
 /** @typedef {import('./pages.js').Value} Value */
 /** @typedef {import('./pages.js').Values} Values */
@@ -121,5 +122,28 @@ export function dictionary(leaf, values, limit) {
   }
   if (!entries.length) return
   const width = 32 - Math.clz32(entries.length - 1)
-  return { entries, ids, width, dictionarySize, plainSize }
+  return { entries, ids, width, plainSize }
+}
+
+/** @param {Leaf} leaf @param {Values} values @param {{present: number}[]} pages @param {number} limit */
+export function chooseDictionary(leaf, values, pages, limit) {
+  const candidate = limit ? dictionary(leaf, values, limit) : undefined
+  if (!candidate) return
+  const { entries, ids, width, plainSize } = candidate
+  const out = new Bytes()
+  plain(out, leaf, entries)
+  const payload = out.finish()
+  const count = entries.length
+  let size = payload.length + dictionaryHeader(payload.length, payload.length, count).length
+  let cursor = 0
+  const indexes = pages.map(({ present }) => {
+    if (!present) return
+    const page = new Bytes()
+    page.byte(width)
+    hybrid(page, ids.slice(cursor, cursor + present), width)
+    cursor += present
+    size += page.length
+    return page.finish()
+  })
+  if (size < plainSize) return { payload, count, indexes }
 }
