@@ -1,0 +1,29 @@
+{
+  "name": "parquet-writer",
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    "types": "./types/index.d.ts",
+    "default": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "types"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "typecheck": "tsc --allowJs --checkJs --strict --noEmit --target es2022 --module nodenext src/index.js",
+    "build:types": "tsc --allowJs --checkJs --strict --declaration --emitDeclarationOnly --target es2022 --module nodenext --outDir types src/index.js",
+    "prepack": "npm run build:types",
+    "test:interop": "node test/interop.js",
+    "test:browser": "node test/browser.js"
+  },
+  "devDependencies": {
+    "hyparquet": "1.33.1",
+    "playwright": "1.65.1",
+    "typescript": "7.0.2"
+  }
+}

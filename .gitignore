@@ -1,0 +1,8 @@
+/_references/
+/node_modules/
+/coverage/
+/test-results/
+/playwright-report/
+/.venv/
+/.tmp/
+/types/
