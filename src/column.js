@@ -2,12 +2,14 @@ import { Bytes } from './binary.js'
 import { plain } from './pages.js'
 
 /** @typedef {import('./pages.js').Value} Value */
+/** @typedef {import('./pages.js').Values} Values */
 /** @typedef {import('./pages.js').Leaf} Leaf */
 /** @typedef {Exclude<Value, null>} Present */
 /** @typedef {{nulls: bigint, nans: bigint, unsafe: boolean, min?: Present, max?: Present}} Bounds */
 
 /** @param {Present} a @param {Present} b */
 function compare(a, b) {
+  if (Object.is(a, b)) return 0
   if (a instanceof Uint8Array && b instanceof Uint8Array) {
     for (let i = 0; i < Math.min(a.length, b.length); i++) {
       if (a[i] !== b[i]) return a[i] - b[i]
@@ -25,7 +27,7 @@ function include(bounds, value) {
   if (bounds.max === undefined || compare(value, bounds.max) > 0) bounds.max = value
 }
 
-/** @param {Value[]} values @param {number} limit @returns {Bounds} */
+/** @param {Values} values @param {number} limit @returns {Bounds} */
 export function pageBounds(values, limit) {
   /** @type {Bounds} */
   const bounds = { nulls: 0n, nans: 0n, unsafe: false }
@@ -73,13 +75,15 @@ function hashBytes(bytes) {
   return hash
 }
 
-/** @param {Leaf} leaf @param {Value[]} values @param {number} limit */
+/** @param {Leaf} leaf @param {Values} values @param {number} limit */
 export function dictionary(leaf, values, limit) {
   if (![1, 2, 6, 7].includes(leaf.physical)) return
   /** @type {Map<Present, number>} */
   const scalar = new Map()
   /** @type {Map<number, number[]>} */
   const binary = new Map()
+  /** @type {WeakMap<Uint8Array, number>} */
+  const binaryIds = new WeakMap()
   /** @type {Present[]} */
   const entries = []
   /** @type {number[]} */
@@ -92,12 +96,16 @@ export function dictionary(leaf, values, limit) {
     plainSize += size
     let id
     if (value instanceof Uint8Array) {
-      const hash = hashBytes(value)
-      const bucket = binary.get(hash) ?? []
-      id = bucket.find(index => compare(entries[index], value) === 0)
+      id = binaryIds.get(value)
       if (id === undefined) {
-        bucket.push(entries.length)
-        binary.set(hash, bucket)
+        const hash = hashBytes(value)
+        const bucket = binary.get(hash) ?? []
+        id = bucket.find(index => compare(entries[index], value) === 0)
+        if (id === undefined) {
+          bucket.push(entries.length)
+          binary.set(hash, bucket)
+        }
+        binaryIds.set(value, id ?? entries.length)
       }
     } else {
       id = scalar.get(value)

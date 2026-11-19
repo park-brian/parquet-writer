@@ -152,7 +152,9 @@ PLAIN encoding function, and comparison rule. Share that compiled representation
 between schema serialization and the encoder. Path identity is an array, not a
 dot-joined string (field names may contain dots).
 
-Flat columns go directly to page planning using index ranges/typed-array views.
+Complete groups of required numeric columns with matching typed arrays go
+directly to page planning through views. Other inputs and any pending tail
+use the same normalized group buffers as rows.
 Rows become bounded column buffers. Traverse each nested root value once and
 distribute its slots to the leaves during ingestion. Keep slot values and levels
 in parallel arrays. The group byte estimate includes the expanded slots, and

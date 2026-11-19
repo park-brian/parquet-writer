@@ -35,6 +35,27 @@ test('reused column buffers fill groups across batch boundaries', async () => {
   assert.deepEqual(output.map(row => row.score ?? null), [null, 1, null, 3, null, 5, null, 7, null, 9, null])
 })
 
+test('writes full typed groups from views and retains only a copied tail', async () => {
+  const schema = { fields: [
+    { name: 'id', type: 'int32', nullable: false },
+    { name: 'weight', type: 'double', nullable: false },
+  ] }
+  const ids = new Int32Array([99, 1, 2, 3, 99]).subarray(1, 4)
+  const weights = new Float64Array([99, -0, 1.5, 2.5, 99]).subarray(1, 4)
+  const chunks = []
+  const writer = new ParquetWriter({ schema, rowGroupRows: 2, codec: 'UNCOMPRESSED', sink: {
+    write(bytes) { chunks.push(bytes) },
+  } })
+  await writer.writeColumns({ rowCount: 3, columns: { id: ids, weight: weights } })
+  ids.fill(100)
+  weights.fill(100)
+  await writer.close()
+  const file = Uint8Array.from(Buffer.concat(chunks)).buffer
+  assert.deepEqual(await parquetReadObjects({ file }), [
+    { id: 1, weight: -0 }, { id: 2, weight: 1.5 }, { id: 3, weight: 2.5 },
+  ])
+})
+
 test('a pending sink write stops source pulls', async () => {
   const { promise: entered, resolve: start } = Promise.withResolvers()
   const { promise: released, resolve: release } = Promise.withResolvers()

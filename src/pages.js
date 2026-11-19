@@ -7,6 +7,8 @@ import { Bytes, encodeText } from './binary.js'
 /** @typedef {{name: string} & FieldType} Field */
 /** @typedef {{fields: Field[]}} Schema */
 /** @typedef {number | bigint | boolean | Uint8Array | null} Value */
+/** @typedef {Int32Array | Uint32Array | BigInt64Array | BigUint64Array | Float32Array | Float64Array} DirectVector */
+/** @typedef {Value[] | DirectVector} Values */
 /** @typedef {{name: string} & Primitive & {physical: number, width: number, integerBits?: number, signed?: boolean, path?: string[], definitionWidth?: number, repetitionWidth?: number}} Leaf */
 
 const types = { boolean: 0, int8: 1, int16: 1, int32: 1, int64: 2,
@@ -14,6 +16,20 @@ const types = { boolean: 0, int8: 1, int16: 1, int32: 1, int64: 2,
   binary: 6, string: 6, fixedBinary: 7, date: 1, time: 2, timestamp: 2, decimal: 7, uuid: 7 }
 const widths = [1, 4, 8, 0, 4, 8, 0, 0]
 const day = { millis: 86_400_000, micros: 86_400_000_000n, nanos: 86_400_000_000_000n }
+const littleEndian = new Uint8Array(Uint16Array.of(1).buffer)[0] === 1
+
+/** @param {Leaf} leaf @param {ArrayLike<unknown>} values @returns {values is DirectVector} */
+export function directVector(leaf, values) {
+  switch (leaf.type) {
+    case 'int32': return values instanceof Int32Array
+    case 'uint32': return values instanceof Uint32Array
+    case 'int64': return values instanceof BigInt64Array
+    case 'uint64': return values instanceof BigUint64Array
+    case 'float': return values instanceof Float32Array
+    case 'double': return values instanceof Float64Array
+    default: return false
+  }
+}
 
 /** @param {{name: string} & Primitive} field @returns {Leaf} */
 export function compileLeaf(field) {
@@ -56,8 +72,8 @@ function integer(value, bits, signed) {
   if (typeof value === 'bigint' && value >= (signed ? -bound : 0n) && value < bound) return value
 }
 
-/** @param {Leaf} leaf @param {unknown} value @returns {Value} */
-export function normalize(leaf, value) {
+/** @param {Leaf} leaf @param {unknown} value @param {Map<string, Uint8Array>} [strings] @returns {Value} */
+export function normalize(leaf, value, strings) {
   if (value == null && leaf.nullable) return null
   if (leaf.integerBits) {
     const result = integer(value, leaf.integerBits, !!leaf.signed)
@@ -103,7 +119,13 @@ export function normalize(leaf, value) {
       if (typeof value === 'number') return value
       break
     case 'string':
-      if (typeof value === 'string') return encodeText(value)
+      if (typeof value === 'string') {
+        const cached = strings?.get(value)
+        if (cached) return cached
+        const bytes = encodeText(value)
+        if (strings && strings.size < 1024 && bytes.length <= 1024) strings.set(value, bytes)
+        return bytes
+      }
       break
     case 'binary':
     case 'fixedBinary':
@@ -166,7 +188,7 @@ export function levels(out, values, width) {
 }
 
 /**
- * @param {Leaf} leaf @param {Value[]} values
+ * @param {Leaf} leaf @param {Values} values
  * @param {number[]} [definitions] @param {number} [definitionWidth]
  * @param {number[]} [repetitions] @param {number} [repetitionWidth] @param {Uint8Array} [encoded]
  */
@@ -179,8 +201,12 @@ export function dataPage(leaf, values, definitions = [], definitionWidth = 0, re
   return payload.finish()
 }
 
-/** @param {Bytes} out @param {Leaf} leaf @param {Value[]} values */
+/** @param {Bytes} out @param {Leaf} leaf @param {Values} values */
 export function plain(out, leaf, values) {
+  if (littleEndian && directVector(leaf, values)) {
+    out.append(new Uint8Array(values.buffer, values.byteOffset, values.byteLength))
+    return
+  }
   if (leaf.type === 'boolean') {
     let byte = 0
     let bit = 0

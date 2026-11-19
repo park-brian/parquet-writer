@@ -9,6 +9,7 @@ const BYTE = 3
 const BINARY = 8
 const LIST = 9
 const STRUCT = 12
+export const magic = Uint8Array.of(80, 65, 82, 49)
 
 /** @typedef {[number, number, unknown]} Field */
 
@@ -101,7 +102,20 @@ export function dictionaryHeader(size, compressed, count) {
 
 /** @param {number[]} sizes */
 function checkPage(...sizes) {
-  if (sizes.some(size => size > 0x7fffffff)) throw new RangeError('Page exceeds Parquet i32 limit')
+  if (sizes.some(size => !Number.isInteger(size) || size < 0 || size > 0x7fffffff)) {
+    throw new RangeError('Page exceeds Parquet i32 limit')
+  }
+}
+
+/** @param {number} length */
+export function trailer(length) {
+  if (!Number.isInteger(length) || length < 0 || length > 0xffffffff) {
+    throw new RangeError('Footer exceeds Parquet uint32 limit')
+  }
+  const bytes = new Uint8Array(8)
+  new DataView(bytes.buffer).setUint32(0, length, true)
+  bytes.set(magic, 4)
+  return bytes
 }
 
 /** @typedef {import('./pages.js').Leaf} Leaf */

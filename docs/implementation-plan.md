@@ -1,8 +1,8 @@
 # Implementation roadmap
 
 Slices 1–6 are complete. Slice 7 covers release verification and benchmarks.
-Column vectors currently feed normalized group buffers. Benchmark the direct
-typed-array path in slice 7 before adding a second buffering representation.
+Complete groups of required numeric vectors can write directly from typed-array
+views. Pending tails and other columns use normalized group buffers.
 
 Use [the design](design.md) for normative API and wire behavior and [the reference
 index](README.md) for source locations and revisions. Implement in this order.
